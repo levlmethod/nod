@@ -54,7 +54,7 @@ export type ChannelPresentation =
     };
 
 interface ChannelOptions {
-  heldMessages?: () => Promise<string[]>;
+  heldMessageSql?: (message: string) => string;
   present?: (threadId: string | null, input: ChannelPresentation) => Promise<string>;
   admission?: WorkAdmission;
   ownerId: string;
@@ -1118,7 +1118,6 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
   }
 
   async function enqueueOutbox() {
-    const held = (await options.heldMessages?.()) ?? [];
     await pool.query(
       `INSERT INTO channel_outbox(message_id,source_id)
       SELECT DISTINCT ON (m.id) m.id,i.source_id FROM messages m
@@ -1127,10 +1126,10 @@ export async function createChannels(pool: Pool, options: ChannelOptions) {
         AND (u.channel_source_id IS NULL OR i.source_id=u.channel_source_id)
       WHERE m.role='assistant' AND m.owner_id=$1 AND m.hidden_at IS NULL AND i.state='submitted' AND u.channel<>'web'
         AND NOT EXISTS (SELECT 1 FROM channel_outbox q WHERE q.message_id=m.id)
-        AND NOT m.id=ANY($2::uuid[])
+        ${options.heldMessageSql ? `AND NOT ${options.heldMessageSql('m')}` : ''}
       ORDER BY m.id,(i.turn_id IS NOT DISTINCT FROM m.turn_id) DESC,i.received_at DESC,i.source_id
       ON CONFLICT(message_id) DO NOTHING`,
-      [ownerId, held],
+      [ownerId],
     );
   }
 

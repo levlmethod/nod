@@ -1,12 +1,11 @@
 import type { Pool, PoolClient } from 'pg';
 import type { ApprovalNote } from '../../shared/tiers.ts';
 import { cardRefusal } from '../../shared/cards.ts';
-import { publicText } from '../communication.ts';
 import type { AgentRegistry } from './registry.ts';
 import { actionTier, tierRules } from './tiers.ts';
 
 export const tierInstructions =
-  'Reads, research, drafts, cards and actions that only reduce spend, such as pausing an ad set, run without the owner. Anything that raises spend or might, publishes, sends to anyone or deletes waits for the owner, who sees it in a queue for the morning digest. Just before such an action, call task update {id, approval: {why, ifWaiting}} saying why it is needed and what happens if the owner waits until morning. Add urgent with the reason only when waiting would cause real harm before the owner next looks, because urgent items notify the owner at once.';
+  'Reads, research, drafts, cards and actions that only reduce spend, such as pausing an ad set, run without the owner. Anything that raises spend or might, publishes, sends to anyone, deletes or archives waits for the owner to say yes, in a queue for the morning digest. Just before such an action, call task update {id, approval: {why, ifWaiting}} saying why it is needed and what happens if the owner waits until morning. Add urgent with the reason only when waiting would cause real harm before the owner next looks, because urgent items notify the owner at once.';
 
 type Card = { task_id: string; agent: string; client: string | null; title: string };
 
@@ -15,7 +14,7 @@ export type TierQueueItem = {
   messageId: string;
   taskId: string;
   card: string;
-  client: string;
+  client: string | null;
   clientTitle: string;
   agent: string;
   agentTitle: string;
@@ -27,14 +26,6 @@ export type TierQueueItem = {
   urgent: string | null;
   askedAt: Date;
 };
-
-function plain(value: string) {
-  return publicText(value)
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\\/g, '\\\\')
-    .replace(/([`*_{}[\]()#+\-.!|<>~])/g, '\\$1');
-}
 
 export function createTierQueue(options: {
   pool: Pool;
@@ -58,7 +49,7 @@ export function createTierQueue(options: {
         owner_id text NOT NULL,
         message_id uuid NOT NULL,
         task_id uuid NOT NULL REFERENCES tasks(id),
-        client text NOT NULL,
+        client text,
         agent text NOT NULL,
         why text NOT NULL,
         if_waiting text NOT NULL,
@@ -125,13 +116,19 @@ export function createTierQueue(options: {
     approval: { id: string; turn_id: string; confirmation_message_id: string },
   ) {
     const card = await cardOf(client, approval.turn_id);
-    if (!card?.client) return;
+    if (!card) return;
     const saved = (
-      await client.query<{ why: string; if_waiting: string; urgent: string | null }>(
-        'DELETE FROM agent_approval_notes WHERE task_id=$1 AND owner_id=$2 RETURNING why,if_waiting,urgent',
+      await client.query<{
+        why: string;
+        if_waiting: string;
+        urgent: string | null;
+        fresh: boolean;
+      }>(
+        `DELETE FROM agent_approval_notes WHERE task_id=$1 AND owner_id=$2
+         RETURNING why,if_waiting,urgent,created_at>now()-interval '10 minutes' AS fresh`,
         [card.task_id, ownerId],
       )
-    ).rows[0];
+    ).rows.find((row) => row.fresh);
     const why = saved?.why ?? `Card: ${card.title}`;
     const ifWaiting = saved?.if_waiting ?? "The agent didn't say.";
     const urgent = saved?.urgent ?? null;
@@ -150,24 +147,14 @@ export function createTierQueue(options: {
         urgent,
       ],
     );
-    const { agent, client: owner } = await names(card);
-    const header = [
-      `${plain(owner.title)} · ${plain(agent.title)}${urgent ? ` · Urgent: ${plain(urgent)}` : ''}`,
-      `Why: ${plain(why)}`,
-      `If you wait: ${plain(ifWaiting)}`,
-    ].join('  \n');
-    await client.query(
-      `UPDATE messages SET text=$3 || E'\\n\\n' || text WHERE id=$1 AND owner_id=$2`,
-      [approval.confirmation_message_id, ownerId, header],
-    );
   }
 
-  async function held(messageIds?: string[]) {
+  async function held(messageIds: string[]) {
     return (
       await pool.query<{ message_id: string }>(
         `SELECT message_id FROM agent_tier_queue WHERE owner_id=$1 AND urgent IS NULL
-         AND ($2::uuid[] IS NULL OR message_id=ANY($2::uuid[]))`,
-        [ownerId, messageIds ?? null],
+         AND message_id=ANY($2::uuid[])`,
+        [ownerId, messageIds],
       )
     ).rows.map((row) => row.message_id);
   }
@@ -201,7 +188,7 @@ export function createTierQueue(options: {
           messageId: row.message_id,
           taskId: row.task_id,
           card: row.card,
-          client: client.name,
+          client: row.client,
           clientTitle: client.title,
           agent: agent.name,
           agentTitle: agent.title,
@@ -219,3 +206,6 @@ export function createTierQueue(options: {
 
   return { initialize, note, trust, asked, held, list };
 }
+
+export const heldMessageSql = (message: string) =>
+  `EXISTS (SELECT 1 FROM agent_tier_queue h WHERE h.message_id=${message}.id AND h.owner_id=${message}.owner_id AND h.urgent IS NULL)`;

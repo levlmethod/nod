@@ -1458,7 +1458,7 @@ test(
   async (t) => {
     const { posts, receive, turnOf, reply, create } = await outboxFixture(t);
     const held = randomUUID();
-    const channels = await create({ heldMessages: async () => [held] });
+    const channels = await create({ heldMessageSql: (message) => `${message}.id='${held}'` });
     try {
       receive('111', 'held-request', 'held-chat');
       await channels.drain();

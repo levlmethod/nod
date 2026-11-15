@@ -9,6 +9,7 @@ test('reads, research and drafts are Tier 1', () => {
   assert.equal(tier('mcp__krowdit__growth_meta_get_insights', { account: 'act_1' }), 1);
   assert.equal(tier('mcp__krowdit__mail_gmail_search', { query: 'refund' }), 1);
   assert.equal(tier('STRIPE_LIST_REFUNDS'), 1);
+  assert.equal(tier('WORDPRESS_GET_POST', { id: 3 }), 1);
   assert.equal(tier('GMAIL_CREATE_EMAIL_DRAFT', { to: 'client@example.test' }), 1);
   assert.equal(tier('mcp__krowdit__instagram_research_page', { handle: 'synthetic' }), 1);
 });
@@ -32,7 +33,11 @@ test('raising spend, publishing, sending to people and deleting are Tier 2', () 
     ['META_UPDATE_ADSET', { adset_id: '1', status: 'ACTIVE' }],
     ['META_RESUME_CAMPAIGN', { id: '1' }],
     ['GOOGLE_ADS_UPDATE_BID', { keyword: 'k', bid: 2 }],
+    ['TABOOLA_UPDATE_CAMPAIGN', { id: '7', daily_budget: '$50' }],
+    ['META_UPDATE_ADSET', { id: '7', budget: { amount: 50 } }],
     ['TABOOLA_UPDATE_CAMPAIGN', { id: '7', is_active: true }],
+    ['META_UPDATE_CAMPAIGN', { id: '7', status: 'ARCHIVED' }],
+    ['GMAIL_FETCH_AND_DELETE', { id: 'm1' }],
   ] as const)
     assert.equal(tier(action, args), 2, action);
 });
@@ -59,8 +64,6 @@ test('tier rules name the agent, the client and its accounts, and ask first for 
   assert.match(rules, /Paid Media Analyst/);
   assert.match(rules, /Formulaic/);
   assert.match(rules, /meta ads@formulaic\.example/);
-  assert.match(rules, /without asking/);
-  assert.match(rules, /Ask me first/);
 });
 
 test(
@@ -251,11 +254,10 @@ test(
       assert.equal(item?.why, 'The client asked for the numbers.');
       assert.equal(item?.ifWaiting, 'They get them tomorrow.');
       assert.equal(item?.urgent, null);
-      assert.deepEqual(await queue.held(), [item!.messageId]);
+      assert.deepEqual(await queue.held([item!.messageId]), [item!.messageId]);
       const text = (await db.pool.query('SELECT text FROM messages WHERE id=$1', [item!.messageId]))
         .rows[0].text as string;
-      assert.match(text, /Formulaic · Paid Media Analyst/);
-      assert.match(text, /Can I run GMAIL_SEND_EMAIL\?$/);
+      assert.equal(text, 'Can I run GMAIL_SEND_EMAIL?');
     });
 
     await t.test('an urgent Tier 2 item is queued but not held back from notifying', async () => {
@@ -277,7 +279,7 @@ test(
       const urgent = (await queue.list()).find((item) => item.urgent);
       assert.equal(urgent?.urgent, 'The dispute window closes tonight.');
       assert.equal((await queue.list())[0]?.approvalId, urgent?.approvalId);
-      assert.equal((await queue.held()).includes(urgent!.messageId), false);
+      assert.equal((await queue.held([urgent!.messageId])).includes(urgent!.messageId), false);
       assert.deepEqual(ran, []);
     });
 

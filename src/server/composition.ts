@@ -130,7 +130,7 @@ import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createClientBudget } from './agents/client-budget.ts';
-import { createTierQueue, tierInstructions } from './agents/tier-queue.ts';
+import { createTierQueue, heldMessageSql, tierInstructions } from './agents/tier-queue.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -2158,8 +2158,16 @@ async function initializeApplication(
                 )
               ).rowCount,
             ));
-        const agentBinding = await agents.bind(context);
-        if (agentBinding.agent?.wall) agentBinding.agent.instructions += `\n\n${tierInstructions}`;
+        const bound = await agents.bind(context);
+        const agentBinding = bound.agent?.wall
+          ? {
+              ...bound,
+              agent: {
+                ...bound.agent,
+                instructions: `${bound.agent.instructions}\n\n${tierInstructions}`,
+              },
+            }
+          : bound;
         await clientBudget.admit(context, agentBinding.agent?.wall?.client);
         const run = () =>
           ledger.withTurn(
@@ -2933,7 +2941,7 @@ async function initializeApplication(
       ? setup.create(await channelSettings!.environment())
       : adapters.messaging!;
     channels = await createChannels(pool, {
-      heldMessages: () => tierQueue.held(),
+      heldMessageSql,
       admission,
       ownerId,
       present: communication.present,

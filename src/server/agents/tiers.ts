@@ -47,6 +47,19 @@ const outward = new Map([
     'scale',
   ].map((word) => [word, 'can raise spend'] as const),
 ]);
+const nouns = new Set([
+  'post',
+  'share',
+  'refund',
+  'payout',
+  'budget',
+  'budgets',
+  'bid',
+  'bids',
+  'scale',
+  'tweet',
+  'charge',
+]);
 const reductions = new Set(['pause', 'stop', 'disable', 'deactivate']);
 const statusKeys = new Set([
   'status',
@@ -58,8 +71,8 @@ const statusKeys = new Set([
   'enabled',
 ]);
 const on = /^(active|enabled?|on|live|running|resumed?|unpaused)$/i;
-const off = /^(paused|inactive|disabled?|off|archived|stopped)$/i;
-const gone = /^(deleted|removed|trashed)$/i;
+const off = /^(paused|inactive|disabled?|off|stopped)$/i;
+const gone = /^(deleted|removed|trashed|archived)$/i;
 
 function words(action: string) {
   return action
@@ -71,7 +84,9 @@ function words(action: string) {
 
 const key = (name: string) => name.toLowerCase().replace(/[^a-z]/g, '');
 const amount = (value: unknown) =>
-  typeof value === 'number' || (typeof value === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(value));
+  typeof value === 'number' ||
+  (typeof value === 'object' && value !== null) ||
+  (typeof value === 'string' && /^\s*\D{0,3}\s*\d[\d,]*(\.\d+)?\s*\D{0,3}\s*$/.test(value));
 
 export function actionTier(action: string, args: Record<string, unknown>): ActionTier | undefined {
   if (action.startsWith('NOD_')) return undefined;
@@ -89,12 +104,15 @@ export function actionTier(action: string, args: Record<string, unknown>): Actio
     if (value === true || (typeof value === 'string' && on.test(value.trim())))
       return { tier: 2, reason: 'It turns something on, which can raise spend.' };
     if (typeof value === 'string' && gone.test(value.trim()))
-      return { tier: 2, reason: 'It deletes something.' };
+      return { tier: 2, reason: 'It deletes or archives something.' };
     if (value === false || (typeof value === 'string' && off.test(value.trim()))) reduces = true;
   }
   const tokens = words(action);
   const read = tokens.some((token) => reads.has(token));
-  const risk = read ? undefined : tokens.map((token) => outward.get(token)).find(Boolean);
+  const risk = tokens
+    .filter((token) => !read || !nouns.has(token))
+    .map((token) => outward.get(token))
+    .find(Boolean);
   if (risk) return { tier: 2, reason: `It ${risk}.` };
   if (reduces || tokens.some((token) => reductions.has(token)))
     return { tier: 1, reason: 'It only reduces spend.' };

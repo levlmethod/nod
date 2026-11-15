@@ -9,10 +9,10 @@ Agents working on cards act alone on low-risk work and wait for the owner on any
 
 ## The two tiers
 
-| Tier   | What it covers                                                                                                                                                  | What happens                            |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| Tier 1 | Reads and research, drafts that aren't sent, new cards, and actions that only reduce spend, such as pausing an ad, ad set or campaign                           | Runs without asking                     |
-| Tier 2 | Anything that raises spend or might (a budget or bid change, launching, resuming or turning on ads, paying), publishing or posting, sending to anyone, deleting | Waits for the owner's yes, in the queue |
+| Tier   | What it covers                                                                                                                                                               | What happens                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Tier 1 | Reads and research, drafts that aren't sent, new cards, and actions that only reduce spend, such as pausing an ad, ad set or campaign                                        | Runs without asking                     |
+| Tier 2 | Anything that raises spend or might (a budget or bid change, launching, resuming or turning on ads, paying), publishing or posting, sending to anyone, deleting or archiving | Waits for the owner's yes, in the queue |
 
 A budget change is always Tier 2, even when it lowers the budget, because the action alone doesn't show which way the spend moves. To cut spend without asking, an agent pauses instead.
 
@@ -24,7 +24,7 @@ On top of the rules, a **tier policy** in code reads the action's name and argum
 
 ## The queue
 
-Every approval a card raises is recorded in the queue with its client, agent, card, the exact action and its arguments, why the agent needs it, what happens if the owner waits, and whether it is urgent. The approval itself is upstream's: the owner approves or declines it on its card in Nod, bound to that exact action, and the card's agent continues from the answer.
+Anything a card has to ask about is the owner's decision, so every approval a card raises is recorded in the queue with its client, agent, card, the exact action and its arguments, why the agent needs it, what happens if the owner waits, and whether it is urgent. The approval itself is upstream's: the owner approves or declines it on its card in Nod, bound to that exact action, and the card's agent continues from the answer.
 
 Before a Tier 2 action, the agent sends its reasons with the card's task update:
 
@@ -40,10 +40,10 @@ Before a Tier 2 action, the agent sends its reasons with the card's task update:
 }
 ```
 
-The next approval on that card takes the note. Without one, the queue shows the card's title as the reason and says the agent didn't say what waiting costs. The approval question in Nod starts with the client, the agent, any urgent reason, why and what happens if the owner waits.
+The next approval on that card within 10 minutes takes the note. Without one, the queue shows the card's title as the reason and says the agent didn't say what waiting costs. The note stays in the queue and never changes the approval question, which upstream writes and reviews from the action alone.
 
 ## Notifications
 
-A queued item that isn't urgent doesn't notify: Nod web shows no browser notification for it and Telegram or WhatsApp never receive it. It waits for the morning digest, which leads with the queue. An item the agent marks urgent notifies at once, like any other question.
+A queued item that isn't urgent doesn't notify: Nod web and the desktop app show no notification for it and Telegram or WhatsApp never receive it. It stays on its card in Nod until the owner opens it. The morning digest, a later change, will lead with the queue. An item the agent marks urgent notifies at once, like any other question.
 
 The code is in `src/server/agents/tiers.ts` (the tier policy and tier rules) and `src/server/agents/tier-queue.ts` (the queue, notes and hold). The upstream files it hooks into are listed in `docs/adr/0004-risk-tiers.md`.
