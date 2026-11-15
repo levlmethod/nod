@@ -22,6 +22,7 @@ const inputs = [
   'desktop/scripts/runtime-build-lock.json',
   'desktop/scripts/runtime-pack.mjs',
   'desktop/runtime/assets.mjs',
+  'src/providers/container-browser/chrome.sh',
   'src/providers/container-browser/chromium.sh',
   'src/providers/container-browser/xvfb.sh',
   'src/providers/docker/install-rtk.sh',

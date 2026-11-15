@@ -10,6 +10,9 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { answerChoiceInputSchema, answerChoicesSchema } from '../shared/answer-choices.ts';
 import { presentationInputSchema, type Presentation } from '../shared/presentation.ts';
+import { cardActionParams, cardFinishParams, cardStartParams } from '../shared/cards.ts';
+import { brainstormDescription, brainstormParams } from './brainstorm.ts';
+import { approvalNoteParams } from '../shared/tiers.ts';
 import { proactiveUpdateSchema, sourceReadSchema } from '../shared/proactivity.ts';
 import { Value } from '@sinclair/typebox/value';
 import {
@@ -291,6 +294,7 @@ export const toolDefinitions = {
       instruction: Type.String({ minLength: 1 }),
     }),
   ),
+  brainstorm: defineTool('brainstorm', brainstormDescription, brainstormParams),
   ask_user: defineTool(
     'ask_user',
     'Ask one necessary question and pause. For a finite decision, supply known choices instead of a prose list, normally two to four. Each label is one short line that names the option with the detail that tells it apart. The owner can write another answer. Never use choices for action approvals or secrets.',
@@ -633,6 +637,7 @@ export const toolDefinitions = {
               { additionalProperties: false },
             ),
           ),
+          ...cardStartParams,
         },
         { additionalProperties: false },
       ),
@@ -645,6 +650,7 @@ export const toolDefinitions = {
           stepIndex: Type.Optional(Type.Integer({ minimum: 0 })),
           waitingFor: Type.Optional(taskWaits),
           nextCheck: Type.Optional(taskNextCheck),
+          ...approvalNoteParams,
         },
         { additionalProperties: false },
       ),
@@ -653,10 +659,12 @@ export const toolDefinitions = {
           action: Type.Literal('finish'),
           id: uuid,
           status: literals(['done', 'cancelled']),
-          result: Type.String({ minLength: 1 }),
+          result: Type.Optional(Type.String({ minLength: 1 })),
+          ...cardFinishParams,
         },
         { additionalProperties: false },
       ),
+      ...cardActionParams,
     ]),
   ),
   share_file: defineTool(
@@ -979,6 +987,7 @@ export function nodTools(
     ...(turn.delegate
       ? [bind(toolDefinitions.delegate, (p) => turn.delegate!(p.title, p.instruction))]
       : []),
+    ...(turn.brainstorm ? [bind(toolDefinitions.brainstorm, (p) => turn.brainstorm!(p))] : []),
     bind(toolDefinitions.ask_user, async (p) => {
       const text = p.question.trim();
       if (!text) throw new Error('A question is required.');

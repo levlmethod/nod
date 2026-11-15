@@ -1,0 +1,8 @@
+services:
+  server:
+    environment:
+      NOD_AGENTS_ROOT: /app/agents
+      NOD_AGENT_SKILLS_ROOT: /app/agent-skills
+    volumes:
+      - ../../agents:/app/agents:ro
+      - ../../agent-skills:/app/agent-skills:ro

@@ -29,6 +29,9 @@ import { personalSecret } from './memory-tree.ts';
 import { texts as codeTexts } from './chat-verification.ts';
 import { waitingTurnSql, withdrawnSql, workKindSql, workOriginSql } from './turn-chain.ts';
 import { resemblesTaskAcknowledgement } from '../shared/task-ack.ts';
+import { cardFinishFields, cardStartFields } from '../shared/cards.ts';
+import type { CardHooks } from './agents/cards.ts';
+import { approvalNoteFields, type ApprovalNote } from '../shared/tiers.ts';
 
 const now = z.string().trim().min(1);
 const waits = z.array(
@@ -53,6 +56,7 @@ const input = z.discriminatedUnion('action', [
       waitingFor: waits.optional(),
       nextCheck: nextCheck.optional(),
       model: modelSelectionInput.optional(),
+      ...cardStartFields,
     })
     .strict(),
   z
@@ -64,6 +68,7 @@ const input = z.discriminatedUnion('action', [
       stepIndex: z.number().int().nonnegative().optional(),
       waitingFor: waits.optional(),
       nextCheck: nextCheck.optional(),
+      ...approvalNoteFields,
     })
     .strict(),
   z
@@ -71,7 +76,8 @@ const input = z.discriminatedUnion('action', [
       action: z.literal('finish'),
       id: z.uuid(),
       status: z.enum(['done', 'cancelled']),
-      result: z.string().trim().min(1),
+      result: z.string().trim().min(1).optional(),
+      ...cardFinishFields,
     })
     .strict(),
 ]);
@@ -146,6 +152,8 @@ export function createTasks(options: {
   refresh?: () => void;
   clearBrowser?: (id: string) => Promise<void>;
   validateModel?: (choice: ModelSelection) => ModelSelection;
+  cards?: CardHooks;
+  approvalNote?: (client: PoolClient, taskId: string, note: ApprovalNote) => Promise<void>;
 }) {
   const { pool, ownerId } = options;
   const refresh = options.refresh ?? (() => {});
@@ -427,6 +435,7 @@ export function createTasks(options: {
       afterCommit(client, () =>
         capture?.({ event: 'task_finished', properties: { status: 'cancelled', actor } }),
       );
+    await options.cards?.closed(client);
     return cancelled;
   }
 
@@ -473,7 +482,11 @@ export function createTasks(options: {
     }
     let id: string;
     if (request.action === 'start') {
-      if (current.task_id) throw failure('This session already has a task. Use update.');
+      const parent =
+        options.cards && current.task_id && !current.proactive && request.agent !== undefined
+          ? (current.task_id as string)
+          : undefined;
+      if (current.task_id && !parent) throw failure('This session already has a task. Use update.');
       let startAfter: Date | undefined;
       if (current.proactive) {
         if (!request.key)
@@ -498,11 +511,12 @@ export function createTasks(options: {
         if (existing) return (await read(client, { id: existing.id, closed: true }))[0];
       }
       id = randomUUID();
-      const independent = current.proactive || current.session_id === turn.threadId;
-      if (request.model && (current.proactive || !independent || !sourceMessageId))
+      const independent =
+        current.proactive || current.session_id === turn.threadId || Boolean(parent);
+      if (request.model && (current.proactive || parent || !independent || !sourceMessageId))
         throw failure('Only a task you start from chat can have its own model.');
       const model = request.model && validateModel(request.model);
-      if (independent && !current.proactive && !sourceMessageId)
+      if (independent && !current.proactive && !parent && !sourceMessageId)
         throw failure('A new task needs an owner request.');
       const prior =
         priorMessageId && sourceMessageId
@@ -544,6 +558,12 @@ export function createTasks(options: {
           model ? JSON.stringify(model) : null,
         ],
       );
+      const card = await options.cards?.start(client, {
+        chat: current.session_id === turn.threadId && !current.proactive,
+        taskId: id,
+        request,
+        parent,
+      });
       if (independent) {
         const source = (
           await client.query(
@@ -551,9 +571,9 @@ export function createTasks(options: {
             [sourceMessageId, ownerId],
           )
         ).rows[0];
-        if (!source && !current.proactive) throw failure('Owner request not found.');
+        if (!source && !current.proactive && !parent) throw failure('Owner request not found.');
         const child = await enqueueTurn(
-          current.proactive ? (request.brief ?? request.doneWhen) : source!.text,
+          current.proactive || parent ? (request.brief ?? request.doneWhen) : source!.text,
           {
             source: current.proactive ? 'event' : 'task',
             proactive: false,
@@ -570,12 +590,28 @@ export function createTasks(options: {
           sourceMessageId,
           child,
         ]);
+        if (card?.hold)
+          await client.query(
+            "UPDATE turns SET start_after='infinity' WHERE id=$1 AND owner_id=$2",
+            [child, ownerId],
+          );
         await link(client, child, id);
       } else await link(client, turn.turnId, id);
     } else {
       id = request.id;
       if (current.task_id !== id)
         throw failure('Only the task session can change its progress or result.');
+      const result =
+        request.action === 'finish'
+          ? options.cards
+            ? await options.cards.finish(client, id, request)
+            : request.result
+          : undefined;
+      if (request.action === 'finish' && !result) throw failure('Finishing a task needs result.');
+      if (request.action === 'update' && request.approval) {
+        if (!options.approvalNote) throw failure('Approval notes are only for cards.');
+        await options.approvalNote(client, id, request.approval);
+      }
       const updated =
         request.action === 'update'
           ? await client.query(
@@ -596,12 +632,13 @@ export function createTasks(options: {
           : await client.query(
               `UPDATE tasks SET state=$3,result=$4,closed_at=now(),updated_at=now() WHERE id=$1 AND owner_id=$2 AND state='open'
            AND applied_revision=revision`,
-              [id, ownerId, request.status, request.result],
+              [id, ownerId, request.status, result],
             );
       if (!updated.rowCount)
         throw failure(
           'The task is closed, its step index is out of range, or it has an owner update to read.',
         );
+      if (request.action === 'finish') await options.cards?.closed(client);
       if (request.action === 'finish')
         afterCommit(client, () =>
           capture?.({

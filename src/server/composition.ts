@@ -117,6 +117,7 @@ import { createPiMemoryCurator } from '../providers/pi/memory-curator.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { coreSkills } from '../runtime/prompt.ts';
+import { mcpNamespaces, toolDefinitions } from '../runtime/tools.ts';
 import { createApp } from './app.ts';
 import { credentialRequestKey } from './access.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
@@ -126,6 +127,17 @@ import { createAgentReactionService } from './agent-reactions.ts';
 import { createApprovals, turnOrigin } from './approvals.ts';
 import { createCommunication, publicText } from './communication.ts';
 import { logFailure } from './failure-log.ts';
+import { createAgentBinding } from './agents/registry.ts';
+import { createCards } from './agents/cards.ts';
+import { createBoard } from './agents/board.ts';
+import { createDigest } from './agents/digest.ts';
+import { createClientBudget } from './agents/client-budget.ts';
+import { createPm } from './agents/pm.ts';
+import { createWatchers } from './agents/watchers.ts';
+import { createTaboola } from './agents/taboola.ts';
+import { createInbox } from './agents/inbox.ts';
+import { createAgentBrowserProfiles } from './agents/browser-profiles.ts';
+import { createTierQueue, heldMessageSql, tierInstructions } from './agents/tier-queue.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -887,6 +899,40 @@ async function initializeApplication(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
   );
+  const cards = createCards({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    participant: (name) => agents.participant(name),
+  });
+  const agentBrowsers = createAgentBrowserProfiles({ pool, ownerId, underTurn: withTurnLock });
+  const agents = createAgentBinding({
+    browserProfiles: agentBrowsers.owned,
+    knownTools: Object.keys(toolDefinitions),
+    namespaces: (servers) => mcpNamespaces(servers).map(({ namespace }) => namespace),
+    card: cards.cardFor,
+    wallRecords: cards.wallRecords,
+    pmSession: (sessionId) => pm.isPmSession(sessionId),
+    skills: { library: skillLibrary },
+  });
+  const pm = createPm({ pool, ownerId, registry: () => agents.registry(), cards });
+  const tierQueue = createTierQueue({ pool, ownerId, registry: () => agents.registry() });
+  const clientBudget = createClientBudget({ pool, ownerId, registry: () => agents.registry() });
+  const board = createBoard({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    cards,
+    spend: clientBudget.spend,
+  });
+  const digest = createDigest({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    board,
+    queue: tierQueue,
+    refresh,
+  });
   const analyzeImages =
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
@@ -930,6 +976,10 @@ async function initializeApplication(
         },
       );
       if (event.type === 'tool_end') captureAnalytics(toolUsed(event));
+      if (event.type === 'tool_start' && agents.enabled)
+        void pm
+          .recordCall(turnId, name, event.input)
+          .catch((error) => logFailure('agent_card_call', error));
       adapters.observe?.(turnId, event);
     },
   });
@@ -1117,6 +1167,8 @@ async function initializeApplication(
   const tasks = createTasks({
     pool,
     ownerId,
+    cards: cards.hooks,
+    approvalNote: tierQueue.note,
     analytics: captureAnalytics,
     refresh,
     clearBrowser: (id) => adapters.computer.clear(id),
@@ -1125,6 +1177,12 @@ async function initializeApplication(
       : {}),
   });
   await tasks.initialize();
+  await cards.initialize();
+  await agentBrowsers.initialize();
+  await clientBudget.initialize();
+  await pm.initialize();
+  await tierQueue.initialize();
+  await digest.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -1202,6 +1260,8 @@ async function initializeApplication(
     ownerId,
     keyStore: adapters.keyStore,
   });
+  const taboola = createTaboola({ pool, ownerId, grantVault });
+  await taboola.initialize();
   const discovered = await createDiscoveredConnections(pool, {
     analytics: captureAnalytics,
     analyticsConsent,
@@ -1682,6 +1742,7 @@ async function initializeApplication(
     (reply) => ledger.forOwner(() => trust.answer(reply)),
     communication.describe,
     captureAnalytics,
+    tierQueue.asked,
   );
   retireScheduleConfirmations = approvals.retireScheduleConfirmations;
   let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
@@ -1945,6 +2006,7 @@ async function initializeApplication(
     ...(adapters.trustModel === 'decision' && adapters.trustDecisions
       ? { decisions: ledger.decisions(adapters.trustDecisions) }
       : {}),
+    tiers: tierQueue.trust,
   });
   const observations = createObservationSources(
     [
@@ -1959,6 +2021,16 @@ async function initializeApplication(
     ],
     { secrets, check: mailCheck, analytics: captureAnalytics },
   );
+  const inbox = createInbox({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    accounts: () => appReads.accounts(),
+    read: (input, signal) => observations.read(input, signal),
+    triage: (instructions, input, signal) =>
+      curator.curate({ task: 'classify', instructions, input, automatic: false }, signal),
+  });
+  await inbox.initialize();
   proactivity = createProactivity({
     pool,
     ownerId,
@@ -2074,6 +2146,10 @@ async function initializeApplication(
       consumers,
       run: () => analytics.withSystemWork(ownerId, 'memory_learning', learning.run),
     });
+    if (agents.enabled) {
+      await pm.start({ boss, consumers });
+      await digest.start({ boss, consumers });
+    }
     await startThreadWorkers({
       present: communication.present,
       taskChecks: tasks.resumeDue,
@@ -2137,12 +2213,30 @@ async function initializeApplication(
                 )
               ).rowCount,
             ));
+        const bound = await agents.bind(context);
+        const agentBinding = bound.agent?.wall
+          ? {
+              ...bound,
+              agent: {
+                ...bound.agent,
+                instructions: `${bound.agent.instructions}\n\n${tierInstructions}`,
+              },
+            }
+          : bound;
+        await clientBudget.admit(context, agentBinding.agent?.wall?.client);
         const run = () =>
           ledger.withTurn(
             context.turnId,
             () =>
               runtime
-                .runTurn({ ...context, runtimeHost: desktopMode ? 'desktop' : 'server' })
+                .runTurn({
+                  ...context,
+                  ...agentBinding,
+                  ...(agentBinding.agent?.tools.includes('brainstorm')
+                    ? { brainstorm: cards.brainstorm(context) }
+                    : {}),
+                  runtimeHost: desktopMode ? 'desktop' : 'server',
+                })
                 .finally(() => proactivity.release(context.turnId)),
             Boolean(context.spendingLimitReached),
             Boolean(context.automatic),
@@ -2161,9 +2255,15 @@ async function initializeApplication(
       recall: personal.recall,
       learnedSkills: learnedSkills.index,
       taskContext: tasks.context,
-      settleTask: tasks.settle,
+      settleTask: async (turn, result) => {
+        if (!(await cards.isCardTurn(turn.turnId))) await tasks.settle(turn, result);
+      },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
+        const pmResult = agents.enabled ? await pm.act(turn, raw) : undefined;
+        if (pmResult !== undefined) return pmResult;
+        const handled = await cards.act(turn, raw);
+        if (handled !== undefined) return handled;
         const request = raw as { action?: unknown; model?: unknown } | undefined;
         if (request?.action === 'start' && request.model) {
           const current = (
@@ -2301,7 +2401,7 @@ async function initializeApplication(
           ? result
           : { result };
       },
-      browserConnection: async (request, turn, signal, launch) => {
+      browserConnection: agentBrowsers.browserConnection(async (request, turn, signal, launch) => {
         const target = await browserConnections.target(request);
         if (!target)
           return browserConnections.request(request, turn, signal, launch).catch(async (error) => {
@@ -2328,7 +2428,7 @@ async function initializeApplication(
             ...(access.basis ? { basis: access.basis } : {}),
           });
         return result;
-      },
+      }),
       speech,
       audioReplies: async () => (await speechPreferences.get()).speechReply,
       manage: async (turn, action, args, { admit, ...provenance }) => {
@@ -2490,6 +2590,7 @@ async function initializeApplication(
         return result;
       },
       requestCredential: async (turn, input) => {
+        const walled = await agentBrowsers.signIn(turn, input);
         if (input.kind === 'method') {
           const origin = credentialOrigin(input.origin);
           const access = await permitVault(turn, { origin, kind: 'sign_in' });
@@ -2503,7 +2604,7 @@ async function initializeApplication(
         }
         const { savedLoginId, ...request } = input;
         const origin = credentialOrigin(request.origin);
-        if (request.kind === 'otp' && !request.emailCode) {
+        if (request.kind === 'otp' && !request.emailCode && !walled) {
           const login = await vault.authenticatorLogin(turn, ownerId, origin, savedLoginId);
           if (login) {
             const access = await permitVault(turn, {
@@ -2526,7 +2627,9 @@ async function initializeApplication(
             }
           }
         }
-        const saved = (await vault.list(ownerId)).filter((entry) => entry.origin === origin);
+        const saved = walled
+          ? []
+          : (await vault.list(ownerId)).filter((entry) => entry.origin === origin);
         const chosen =
           savedLoginId !== undefined
             ? saved.find((entry) => entry.id === savedLoginId)
@@ -2569,7 +2672,7 @@ async function initializeApplication(
           return (await vault.fillSaved(turn, ownerId, savedLoginId, request))
             ? filled(savedLoginId)
             : vault.request(turn, ownerId, request);
-        const selected = await vault.fillSelected(turn, ownerId, request);
+        const selected = walled ? false : await vault.fillSelected(turn, ownerId, request);
         if (selected) return filled();
         if (selected === undefined && chosen) {
           if (await vault.fillSaved(turn, ownerId, chosen.id, request)) return filled(chosen.id);
@@ -2744,6 +2847,7 @@ async function initializeApplication(
     }
   };
   const app = await createApp({
+    heldMessages: tierQueue.held,
     failureLog: diagnostics.failure,
     analytics: captureAnalytics,
     admission,
@@ -2825,6 +2929,8 @@ async function initializeApplication(
     updatesEmail: onboardingProfile.available,
   }).register(app);
   ledger.registerRoutes(app);
+  board.registerRoutes(app);
+  taboola.registerRoutes(app);
   activityLog.registerRoutes(app);
   registerSpeechSettings(app, {
     speech,
@@ -2902,6 +3008,7 @@ async function initializeApplication(
       ? setup.create(await channelSettings!.environment())
       : adapters.messaging!;
     channels = await createChannels(pool, {
+      heldMessageSql,
       admission,
       ownerId,
       present: communication.present,
@@ -3014,6 +3121,42 @@ async function initializeApplication(
     }
   }
   await onboardingSuggestions.initialize();
+  if (options.workers !== false && adapters.model.configured) {
+    let inboxRunning = false;
+    const checkInbox = () => {
+      if (inboxRunning) return;
+      inboxRunning = true;
+      const run = admission.run(async () => {
+        const { opened, failed } = await inbox.check(closing.signal);
+        for (const failure of failed)
+          console.error(JSON.stringify({ event: 'inbox_triage_failed', ...failure }));
+        if (opened.length) refresh();
+      });
+      if (!run) inboxRunning = false;
+      void run
+        ?.catch((error) => {
+          if (!closing.signal.aborted)
+            console.error(
+              JSON.stringify({ event: 'inbox_triage_failed', reason: (error as Error).message }),
+            );
+        })
+        .finally(() => {
+          inboxRunning = false;
+        });
+    };
+    const inboxTimer = setInterval(checkInbox, 15 * 60_000);
+    const firstInbox = setTimeout(checkInbox, 60_000);
+    inboxTimer.unref();
+    firstInbox.unref();
+    closing.signal.addEventListener(
+      'abort',
+      () => {
+        clearInterval(inboxTimer);
+        clearTimeout(firstInbox);
+      },
+      { once: true },
+    );
+  }
   if (adapters.model.configured)
     void admission.run(integrations.resumeWritingStyle)?.catch(() => {});
   let closingConsumers: Promise<void> | undefined;
@@ -3036,9 +3179,23 @@ async function initializeApplication(
       clearTimeout(timer);
     }
   }
-  app.addHook('onReady', async () => activity.start());
+  const watchers = createWatchers({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    ...taboola.alongside({
+      servers: discovered.servers,
+      call: (args) => discovered.execute('CONNECTED_MCP_CALL', args),
+    }),
+  });
+  let stopWatchers: (() => Promise<void>) | undefined;
+  app.addHook('onReady', async () => {
+    activity.start();
+    stopWatchers = watchers.start();
+  });
   app.addHook('onClose', async () => {
     stopConnectionInventory();
+    await stopWatchers?.();
     const failures: unknown[] = [];
     for (const close of [
       () => adapters.integrationBrowser?.close(),

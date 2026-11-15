@@ -1,0 +1,151 @@
+---
+title: Watchers
+description: How the marketing fork checks each client's metrics every hour in code, without a model, and opens one investigation card per anomaly for the right analyst.
+sidebar:
+  order: 10
+---
+
+Watchers check each client's numbers every hour. The check runs in code and calls no model, so an hour where nothing moves costs nothing. When a metric crosses its threshold, the watcher opens an investigation card for the agent the threshold names, with the numbers that tripped it. Clients and cards are described in [Clients and walls](/how-it-works/clients-and-walls/).
+
+Watchers run only when agents are on (`NOD_AGENTS_ROOT` is set). The first check runs a minute after the server starts.
+
+## Thresholds
+
+Each threshold is an entry under `thresholds` in the client's file, keyed by a name of your choice. The name is the anomaly key, so a client has at most one open card per threshold.
+
+```markdown
+---
+title: Formulaic
+budget:
+  monthlyUsd: 500
+connections:
+  - service: krowdit
+    account: formulaic
+thresholds:
+  conversion-drop:
+    agent: ga4-analyst
+    source:
+      service: krowdit
+      tool: growth_ga4_run_report
+      input: { metrics: [keyEvents], dimensions: [date], startDate: 8daysAgo, endDate: yesterday }
+      values: 'rows[].metricValues.0.value'
+      sortBy: 'rows[].dimensionValues.0.value'
+    drop: 0.3
+  failed-payments:
+    agent: revenue-analyst
+    source:
+      service: krowdit
+      tool: growth_stripe_list_charges
+      input: { limit: 100 }
+      values: 'data[status=failed].id'
+      combine: count
+    above: 3
+---
+```
+
+The tool names, inputs and paths above are examples. Check what the tool really returns, and its order, before writing `values`.
+
+| Field             | Required | Meaning                                                                                                                                                  |
+| ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`           | Yes      | The agent that owns the investigation card. It must be an agent that can own a card.                                                                     |
+| `source`          | Yes      | Where the numbers come from (below).                                                                                                                     |
+| `drop`            | One of   | Trips when the latest value is this fraction or more below the average of the earlier values. `0.3` = 30%.                                               |
+| `rise`            | One of   | Trips when the latest value is this fraction or more above that average, or above zero when it was zero.                                                 |
+| `above`           | One of   | Trips when the latest value is above this number.                                                                                                        |
+| `below`           | One of   | Trips when the latest value is below this number.                                                                                                        |
+| `pace`            | One of   | `monthlyUsd` and `over`. The values are this month's daily spend; trips when their sum is more than `over` above the budget pro-rated to that many days. |
+| `baseline`        | No       | How many earlier values make the average for `drop` and `rise`. Defaults to 7.                                                                           |
+| `estimateMinutes` | No       | The card's estimate in agent minutes. Defaults to 30.                                                                                                    |
+
+Each threshold has exactly one of `drop`, `rise`, `above`, `below` and `pace`. A client file with an invalid threshold is skipped and logged as `agent_config_rejected` with the threshold's name and the reason.
+
+### Sources
+
+`source` names one tool on one of the client's MCP connections:
+
+- `service` is the MCP server's service or name, and the server's account must be one of the client's `connections`. A watcher never reads another client's connection.
+- `tool` is the tool to call and `input` its arguments.
+- `values` is a path to the numbers in the tool's result, oldest first. Steps are separated by dots; `name[]` takes every item of a list and `name[field=value]` only the items whose field equals that value. The result's structured content is used when the server returns it, otherwise its text parsed as JSON.
+- `newestFirst: true` reverses a list that comes back newest first.
+- `sortBy` is a second path, read the same way, that finds one sort key per value, such as each row's date. The values are put in the keys' text order before the check, for a report like GA4's whose rows come back in no fixed order. A source with `sortBy` fails, with the reason, when the path finds a different number of keys than values, or a key that isn't text or a number.
+- `combine: count` checks how many items the path found, and `combine: sum` checks their total.
+
+## Taboola
+
+Taboola has no MCP server, so the fork has its own read-only Taboola connection for RKMD's spend and performance. It talks to Taboola's Backstage API from the server, and the watcher sees it as one more connection with service `taboola`.
+
+### Add the credentials
+
+1. In Taboola Backstage, ask your Taboola account manager for API access. They give you a client ID and a client secret. Note the advertiser's account ID (`account_id`, a text ID such as `rkmd-sc`, not the number).
+2. In Nod, open **Board**. The section shows only when agents are on (`NOD_AGENTS_ROOT` is set). Under **Taboola**, enter the client ID, client secret and account ID, and select **Connect Taboola**.
+3. Nod signs in to Taboola and checks that the credentials can read that account before it saves anything. If Taboola refuses, the form shows Taboola's status and reason and saves nothing.
+4. Add the account to the client's file:
+
+```yaml
+connections:
+  - service: taboola
+    account: rkmd-sc
+```
+
+The client secret is encrypted with Nod's vault key in the server's database. It never goes into the sandbox, a browser, a prompt, a log or the repository, and the Board shows only the account. **Disconnect** deletes the connection and its saved secret. To change the secret, connect the same account again.
+
+### Tools
+
+The Taboola connection has only three tools, and every request it sends to the Backstage API is a GET. The only other request is the sign-in that exchanges the client credentials for a short-lived token.
+
+| Tool                   | Reads                                                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_account`          | The account the connection is bound to.                                                                                                |
+| `list_campaigns`       | The account's campaigns, in `results`.                                                                                                 |
+| `get_campaign_summary` | The campaign summary report, in `results`. Day rows come oldest first, with `spent`, `clicks`, `impressions`, `cpc`, `cpa` and `roas`. |
+
+`get_campaign_summary` takes these inputs, all optional:
+
+- `days`: how many days through yesterday. Defaults to 14, at most 90. Yesterday is the last full day, so a partial today doesn't look like a drop.
+- `monthToDate: true`: from the first of the month instead, for a `pace` check. On the first of the month it reads the partial first day.
+- `includeToday: true`: also the partial current day.
+- `timeZone`: the IANA time zone that decides which day is today. Defaults to UTC. Taboola reports days in the advertiser account's time zone, so set it to that zone, or yesterday can be a partial day around midnight.
+- `dimension`: `day` by default, or `week`, `month`, `campaign_breakdown`, `campaign_day_breakdown`, `site_breakdown`, `country_breakdown` or `platform_breakdown`.
+- `campaign`: one campaign ID.
+
+For example, a daily spend drop and a monthly pace check for RKMD:
+
+```yaml
+thresholds:
+  taboola-spend-drop:
+    agent: paid-media-analyst
+    source:
+      service: taboola
+      tool: get_campaign_summary
+      input: { days: 8 }
+      values: 'results[].spent'
+    drop: 0.5
+  taboola-pace:
+    agent: paid-media-analyst
+    source:
+      service: taboola
+      tool: get_campaign_summary
+      input: { monthToDate: true, timeZone: America/New_York }
+      values: 'results[].spent'
+    pace: { monthlyUsd: 3000, over: 0.2 }
+```
+
+The Taboola connection serves watchers only. A card's agent doesn't get Taboola tools yet, so an investigation card for a Taboola anomaly starts from the numbers in its first turn.
+
+## Watchers only read
+
+A watcher calls only a tool whose name is a read. Before any call, the tool is refused when its server hints that it is not read-only or is destructive, when its name has a write word such as create, send, update, delete, refund, spam or sync, or when its name has no read word such as get, list, search, query or fetch (GA4's `run_report` also counts as a read). A server's read-only hint alone never lets a tool through. A refused tool is never called, and the watcher logs `watcher_check_failed` with the tool and the reason.
+
+Watcher reads don't go through the trust check, because the check would be a model request every hour. The owner writes the exact tool and its input in the client file in git, which plays the part of the owner's words, and the code refuses anything that isn't a read. Agents can't change client files.
+
+A failed read, a missing connection, an agent that can't own a card or a path that finds something other than numbers is logged the same way, with the threshold's key and the specific reason, but never with the data the source returned. The other thresholds still run.
+
+## Investigation cards
+
+An anomaly opens a card of type `investigation` for the threshold's client and agent, with the agent's card budget. The card's first turn carries the threshold name, the source and the numbers: the latest value, the baseline and the limit it crossed. The analyst works behind the client's wall, finds why the metric moved, and closes the card with the cause as its conclusion, the numbers as evidence, and the proposed fix and its tier as the next action.
+
+The card starts like work Nod starts on its own: no owner message stands behind it, so every action it takes beyond a read goes through the trust check against the owner's notification rule and rules, and asks the owner otherwise.
+
+An anomaly opens one card and then holds. While the metric stays past its threshold, no new card opens, even after the card closes or is stopped. Once an hourly check finds the metric back inside its threshold, the next trip opens a new card.
+
+Like the owner's own schedules, watchers keep running when private preparation is paused or during quiet hours. Spend pace counts the days of the month in the owner's time zone.

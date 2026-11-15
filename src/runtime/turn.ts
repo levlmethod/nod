@@ -27,6 +27,7 @@ export interface Turn {
   ): Promise<void>;
   confirm(result: unknown): Promise<unknown>;
   visited(browserId: string, url: string): void;
-  delegate?(title: string, instruction: string): Promise<string>;
+  delegate?(title: string, instruction: string, agent?: RuntimeContext['agent']): Promise<string>;
+  brainstorm?(input: { participants: string[]; devilsAdvocate?: string }): Promise<unknown>;
   setStatus?(text: string): Promise<string>;
 }

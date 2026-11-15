@@ -6,6 +6,7 @@ import type { BrowserDownload, Computer } from '../../ports/computer.ts';
 import { BrowserActionError } from '../../ports/computer.ts';
 import { createAgentBrowserComputer } from '../agent-browser/index.ts';
 import { containerBrowserOptions } from './config.ts';
+import { containerBrowserProduct } from './chrome.ts';
 import {
   browserFrame,
   browserInputResult,
@@ -416,6 +417,10 @@ export async function startContainerBrowserWorker(
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const worker = await startContainerBrowserWorker();
+  const { product, reason } = containerBrowserProduct();
+  console.error(
+    JSON.stringify({ event: 'browser_product', product, ...(reason ? { reason } : {}) }),
+  );
   const stop = () => {
     void worker.close().finally(() => {
       process.exitCode = 0;

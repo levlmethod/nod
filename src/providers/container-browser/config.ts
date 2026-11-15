@@ -1,4 +1,5 @@
 import type { createAgentBrowserComputer } from '../agent-browser/index.ts';
+import { containerBrowserProduct } from './chrome.ts';
 
 export function containerBrowserOptions(
   dataRoot: string,
@@ -9,7 +10,7 @@ export function containerBrowserOptions(
   return {
     dataRoot,
     executable: `/app/node_modules/agent-browser/bin/agent-browser-linux-${architecture}`,
-    browserExecutable: '/app/src/providers/container-browser/chromium.sh',
+    browserExecutable: containerBrowserProduct(architecture).executable,
     platform: 'linux',
     headless: false,
     sandbox: false,
