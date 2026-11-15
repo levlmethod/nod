@@ -133,6 +133,7 @@ import { createBoard } from './agents/board.ts';
 import { createClientBudget } from './agents/client-budget.ts';
 import { createPm } from './agents/pm.ts';
 import { createWatchers } from './agents/watchers.ts';
+import { createInbox } from './agents/inbox.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -1990,6 +1991,16 @@ async function initializeApplication(
     ],
     { secrets, check: mailCheck, analytics: captureAnalytics },
   );
+  const inbox = createInbox({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    accounts: () => appReads.accounts(),
+    read: (input, signal) => observations.read(input, signal),
+    triage: (instructions, input, signal) =>
+      curator.curate({ task: 'classify', instructions, input, automatic: false }, signal),
+  });
+  await inbox.initialize();
   proactivity = createProactivity({
     pool,
     ownerId,
@@ -3068,6 +3079,42 @@ async function initializeApplication(
     }
   }
   await onboardingSuggestions.initialize();
+  if (options.workers !== false && adapters.model.configured) {
+    let inboxRunning = false;
+    const checkInbox = () => {
+      if (inboxRunning) return;
+      inboxRunning = true;
+      const run = admission.run(async () => {
+        const { opened, failed } = await inbox.check(closing.signal);
+        for (const failure of failed)
+          console.error(JSON.stringify({ event: 'inbox_triage_failed', ...failure }));
+        if (opened.length) refresh();
+      });
+      if (!run) inboxRunning = false;
+      void run
+        ?.catch((error) => {
+          if (!closing.signal.aborted)
+            console.error(
+              JSON.stringify({ event: 'inbox_triage_failed', reason: (error as Error).message }),
+            );
+        })
+        .finally(() => {
+          inboxRunning = false;
+        });
+    };
+    const inboxTimer = setInterval(checkInbox, 15 * 60_000);
+    const firstInbox = setTimeout(checkInbox, 60_000);
+    inboxTimer.unref();
+    firstInbox.unref();
+    closing.signal.addEventListener(
+      'abort',
+      () => {
+        clearInterval(inboxTimer);
+        clearTimeout(firstInbox);
+      },
+      { once: true },
+    );
+  }
   if (adapters.model.configured)
     void admission.run(integrations.resumeWritingStyle)?.catch(() => {});
   let closingConsumers: Promise<void> | undefined;

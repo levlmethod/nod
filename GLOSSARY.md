@@ -36,6 +36,10 @@ The agent that writes the owner's morning digest.
 The hourly check, in code with no model, of a client's thresholds against its data sources. It opens an investigation card for the threshold's agent when it finds an anomaly.
 _Avoid_: Monitor, observer
 
+**Inbox agent**:
+The agent that reads new mail to the agency's inboxes, decides which client it is about and whether it needs work, and opens at most one card per email thread. It has no tools and never replies.
+_Avoid_: Mail bot, email watcher
+
 ### Clients
 
 **Client**:

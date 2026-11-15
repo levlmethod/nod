@@ -27,7 +27,22 @@ export const clientSchema = Type.Object(
     ),
     dataSources: Type.Optional(names),
     thresholds: Type.Optional(thresholdsSchema),
-    inboxes: Type.Optional(names),
+    inboxes: Type.Optional(
+      Type.Array(
+        Type.Union([
+          Type.String({ minLength: 3 }),
+          Type.Object(
+            {
+              address: Type.String({ minLength: 3 }),
+              connection: Type.String({ minLength: 1 }),
+              tool: Type.String({ minLength: 1 }),
+              args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+            },
+            { additionalProperties: false },
+          ),
+        ]),
+      ),
+    ),
   },
   { additionalProperties: false },
 );
