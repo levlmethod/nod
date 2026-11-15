@@ -270,6 +270,7 @@ export function createAgentBinding(options: {
     client: string | null,
   ) => Promise<{ sessionTurns: ReadonlySet<string>; clientCards: ReadonlySet<string> }>;
   pmSession?: (sessionId: string) => Promise<boolean>;
+  browserProfiles?: (agent: string, client: string | null) => Promise<ReadonlySet<string>>;
   root?: string;
   skills?: AgentSkillSources;
 }) {
@@ -336,6 +337,9 @@ export function createAgentBinding(options: {
           clients: registry.clients,
           namespaces: options.namespaces,
           ...(await options.wallRecords(context.sessionId, card.client)),
+          ...(options.browserProfiles
+            ? { browserProfiles: await options.browserProfiles(card.agent, card.client) }
+            : {}),
         },
       );
     },

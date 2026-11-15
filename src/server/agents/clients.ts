@@ -105,8 +105,6 @@ const sharedTools: Record<string, string> = {
   manage_personal_context:
     "The owner's memory, history, settings and usage are shared across every client",
   manage_apps: 'The app list holds every client’s accounts',
-  sign_in: 'Saved logins belong to the owner, not to one client',
-  browser_session: 'Saved browser sessions belong to the owner, not to one client',
   pay: 'Saved cards belong to the owner, not to one client',
   files: "The owner's computer holds every client's files",
 };
@@ -119,6 +117,7 @@ export function wallCard(
     sessionTurns: ReadonlySet<string>;
     clientCards: ReadonlySet<string>;
     namespaces: (servers: ConnectedMcpServer[]) => string[];
+    browserProfiles?: ReadonlySet<string>;
   },
 ): Partial<RuntimeContext> & { agent: NonNullable<RuntimeContext['agent']> } {
   const client = card.client ? card.clients.get(card.client) : undefined;
@@ -126,6 +125,11 @@ export function wallCard(
   const apps = client ? (input.connectedApps ?? []).filter((app) => appOwned(client, app)) : [];
   const servers = client
     ? (input.mcpServers ?? []).filter((item) => serverOwned(client, item))
+    : [];
+  const profiles = client
+    ? (input.connectedApps ?? []).filter(
+        (app) => app.connectionId && card.browserProfiles?.has(app.connectionId),
+      )
     : [];
   const allowed = new Set([
     ...apps.flatMap((app) => (app.connectionId ? [app.connectionId] : [])),
@@ -180,7 +184,7 @@ export function wallCard(
       : `Connection ${connectionId} isn't one of ${label}'s connections, so this card can't use it. ${label}'s connections: ${listed}.`;
   };
   const brief = client
-    ? `You are working for the client ${client.title} (${client.name}). Everything on this card is for ${client.title} only: you see only its brief, connections and cards, and other clients' data is refused.\nClient brief, as the owner wrote it:\n${client.brief || '(empty)'}\nConnections for ${client.title}: ${[...apps.map((app) => `${app.name} (${app.accountEmail ?? app.accountName}) connectionId ${app.connectionId}`), ...servers.map((server) => `${server.name} (${server.accountName}) MCP server`)].join('; ') || 'none'}.`
+    ? `You are working for the client ${client.title} (${client.name}). Everything on this card is for ${client.title} only: you see only its brief, connections and cards, and other clients' data is refused.\nClient brief, as the owner wrote it:\n${client.brief || '(empty)'}\nConnections for ${client.title}: ${[...apps.map((app) => `${app.name} (${app.accountEmail ?? app.accountName}) connectionId ${app.connectionId}`), ...servers.map((server) => `${server.name} (${server.accountName}) MCP server`)].join('; ') || 'none'}.\nYour saved browser profiles for ${client.title}: ${profiles.map((app) => `${app.accountName ?? app.name} connectionId ${app.connectionId}`).join('; ') || 'none'}. Open one with browser_session use; make one with browser_session connect, sign in with sign_in, then save it, and later cards of yours for ${client.title} stay signed in.`
     : `This card has ${card.client ? `the client ${card.client}, which has no valid config in agents/clients` : 'no client'}, so it can use no connections. Close it with one question asking the owner to fix the client config or restart the card for a client.`;
   return {
     agent: {
@@ -188,7 +192,7 @@ export function wallCard(
       instructions: `${input.agent.instructions}\n\n${brief}`,
       wall: { client: card.client ?? '', refuse },
     },
-    connectedApps: apps,
+    connectedApps: [...apps, ...profiles],
     mcpServers: servers,
     memory: '',
     memoryBrief: undefined,

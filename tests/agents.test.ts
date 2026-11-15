@@ -313,6 +313,16 @@ const app = (connectionId: string, account: string) =>
     access: ['api'],
   }) as NonNullable<RuntimeContext['connectedApps']>[number];
 
+const profile = (connectionId: string, label: string) =>
+  ({
+    slug: 'browser-ads-example',
+    name: 'ads.example',
+    status: 'connected',
+    connectionId,
+    accountName: label,
+    access: ['browser'],
+  }) as NonNullable<RuntimeContext['connectedApps']>[number];
+
 test('a card sees only its own client: other clients’ connections, memory, chat and cards are walled off', async () => {
   const root = await configRoot({
     'core/team.md': team('router'),
@@ -351,6 +361,8 @@ test('a card sees only its own client: other clients’ connections, memory, cha
         connectedApps: [
           app('rkmd-ga4', 'ads@rkmd.example'),
           app('formulaic-ga4', 'data@formulaic.example'),
+          profile('rkmd-ads-profile', 'rkmd · growth-analyst: ads.example'),
+          profile('rkmd-writer-profile', 'rkmd · copywriter: ads.example'),
         ],
         mcpServers: [server('krowdit-formulaic', 'formulaic')] as RuntimeContext['mcpServers'],
         history: [
@@ -367,12 +379,15 @@ test('a card sees only its own client: other clients’ connections, memory, cha
         sessionTurns: new Set([ownTurn]),
         clientCards: new Set([rkmdCard]),
         namespaces,
+        browserProfiles: new Set(['rkmd-ads-profile']),
       },
     );
     assert.deepEqual(
       walled.connectedApps?.map((item) => item.connectionId),
-      ['rkmd-ga4'],
+      ['rkmd-ga4', 'rkmd-ads-profile'],
     );
+    assert.match(walled.agent.instructions, /rkmd-ads-profile/);
+    assert.doesNotMatch(walled.agent.instructions, /rkmd-writer-profile/);
     assert.deepEqual(walled.mcpServers, []);
     assert.equal(walled.memory, '');
     assert.equal(walled.relatedConversation, undefined);
@@ -436,7 +451,7 @@ test('a card sees only its own client: other clients’ connections, memory, cha
     assert.match(outcomes[4]!, /memory, history.*shared across every client/);
     assert.match(outcomes[5]!, /holds every client's cards/);
     assert.match(outcomes[6]!, /Learned procedures are shared/);
-    assert.match(outcomes[7]!, /Saved logins belong to the owner/);
+    assert.equal(outcomes[7], 'sign_in: ran');
     assert.match(outcomes[8]!, /computer holds every client's files/);
     assert.equal(walled.learnedSkills, undefined);
   } finally {
@@ -575,6 +590,13 @@ routing: Owns client growth metrics, traffic and conversion questions.
 ---
 `,
       'growth/growth-analyst.md': analyst,
+      'growth/ads-buyer.md': `---
+title: Ads Buyer
+role: Runs paid campaigns in each client's ad accounts.
+tools: [browser, browser_session, sign_in]
+---
+Run paid campaigns.
+`,
       ...clientConfigs,
       'creative/team.md': `---
 lead: copywriter
@@ -855,6 +877,117 @@ Compare the client's ranking keywords with three competitors.
           (await db.pool.query('SELECT result FROM tasks WHERE id=$1', [task.id])).rows[0].result,
           'Synthetic summary.',
         );
+      },
+    );
+
+    await t.test(
+      'a card opens and signs in only to its own agent and client browser profiles',
+      async () => {
+        const { createBrowserConnections } = await import('../src/server/browser-connections.ts');
+        const { createAgentBrowserProfiles } =
+          await import('../src/server/agents/browser-profiles.ts');
+        const bound: string[] = [];
+        const page = { origin: 'https://ads.example.com', url: 'https://ads.example.com/home' };
+        const connections = await createBrowserConnections(db.pool, {
+          ownerId,
+          computer: fakeComputer({
+            bindProfile: async (_browser, profileId) => {
+              bound.push(profileId);
+            },
+            act: async () => ({ text: 'Campaigns', url: page.url }),
+            currentPage: async () => page,
+          }),
+        });
+        const profiles = createAgentBrowserProfiles({ pool: db.pool, ownerId });
+        await profiles.initialize();
+        const open = profiles.browserConnection((request, turn, signal) =>
+          connections.request(request, turn, signal),
+        );
+        const card = async (agent: string, client: string) => {
+          const { turn, messageId } = await ask(`Check the ${client} ad account.`);
+          const task = (await tasks.execute(
+            turn,
+            start({ agent, client, estimateMinutes: 10 }),
+            messageId,
+          )) as { id: string };
+          return { ...(await cardTurn(task.id)), browserId: task.id };
+        };
+        const url = 'https://ads.example.com/login';
+        const first = await card('ads-buyer', 'rkmd');
+        await assert.rejects(
+          profiles.signIn(first, { kind: 'password' }),
+          /signs in only inside its own saved browser profile/,
+        );
+        const made = (await open({ action: 'connect', url }, first)) as {
+          status: string;
+          connectionId: string;
+        };
+        assert.equal(made.status, 'profile_opened');
+        assert.equal(await profiles.signIn(first, { kind: 'password' }), true);
+        await assert.rejects(
+          profiles.signIn(first, { kind: 'password', savedLoginId: randomUUID() }),
+          /Saved logins belong to the owner/,
+        );
+        await assert.rejects(
+          profiles.signIn(first, { kind: 'otp', emailCode: true }),
+          /owner's mailbox/,
+        );
+        assert.deepEqual(
+          await open(
+            { action: 'save', url, connectionId: made.connectionId, signedIn: true },
+            first,
+          ),
+          { status: 'session_saved', connectionId: made.connectionId },
+        );
+        assert.match(
+          (
+            await db.pool.query('SELECT label FROM browser_connections WHERE id=$1', [
+              made.connectionId,
+            ])
+          ).rows[0].label,
+          /^rkmd · ads-buyer: ads\.example\.com$/,
+        );
+        assert.deepEqual([...(await profiles.owned('ads-buyer', 'rkmd'))], [made.connectionId]);
+        assert.deepEqual([...(await profiles.owned('ads-buyer', 'formulaic'))], []);
+        assert.deepEqual([...(await profiles.owned('growth-analyst', 'rkmd'))], []);
+
+        await db.pool.query("UPDATE turns SET status='succeeded' WHERE session_id=$1", [
+          first.browserId,
+        ]);
+        const later = await card('ads-buyer', 'rkmd');
+        const reopened = (await open(
+          { action: 'use', url, connectionId: made.connectionId },
+          later,
+        )) as { status: string };
+        assert.equal(reopened.status, 'session_opened');
+        assert.equal(bound.at(-1), bound[0]);
+        assert.equal(await profiles.signIn(later, { kind: 'password' }), true);
+
+        const before = bound.length;
+        await assert.rejects(
+          open(
+            { action: 'use', url, connectionId: made.connectionId },
+            await card('growth-analyst', 'rkmd'),
+          ),
+          /belongs to ads-buyer for rkmd, not growth-analyst for rkmd/,
+        );
+        await assert.rejects(
+          open(
+            { action: 'use', url, connectionId: made.connectionId },
+            await card('ads-buyer', 'formulaic'),
+          ),
+          /belongs to ads-buyer for rkmd, not ads-buyer for formulaic/,
+        );
+        const { turn: chat } = await ask('Open the ads account for me.');
+        const owners = (await open({ action: 'connect', url, label: 'Ads' }, chat)) as {
+          connectionId: string;
+        };
+        assert.equal(await profiles.signIn(chat, { kind: 'password' }), false);
+        await assert.rejects(
+          open({ action: 'use', url, connectionId: owners.connectionId }, later),
+          /isn't one of ads-buyer's profiles for rkmd/,
+        );
+        assert.equal(bound.length, before + 1);
       },
     );
 
@@ -2195,4 +2328,17 @@ test("a brainstorm runs private ideas in parallel, a cross-build, one devil's ad
   );
   assert.equal(rounds[2]!.entries[0]!.text, 'Answer 3 from copywriter.');
   assert.match(JSON.stringify(result), /top/);
+});
+
+test('the browser image runs Google Chrome on Linux x64 and says why it falls back to Chromium', async () => {
+  const { containerBrowserProduct, googleChrome } =
+    await import('../src/providers/container-browser/chrome.ts');
+  const chrome = containerBrowserProduct('x64', (path) => path === googleChrome);
+  assert.equal(chrome.product, 'Google Chrome');
+  assert.match(chrome.executable, /chrome\.sh$/);
+  assert.equal(chrome.reason, undefined);
+  const arm = containerBrowserProduct('arm64', () => true);
+  assert.equal(arm.product, 'Chromium');
+  assert.ok(arm.reason);
+  assert.equal(containerBrowserProduct('x64', () => false).product, 'Chromium');
 });
