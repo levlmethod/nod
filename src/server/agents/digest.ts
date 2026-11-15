@@ -4,7 +4,7 @@ import type { PgBoss } from 'pg-boss';
 import type { Board, BoardCard } from '../../shared/board.ts';
 import type { CardResult } from '../../shared/cards.ts';
 import { logFailure } from '../failure-log.ts';
-import { lockThread } from '../thread.ts';
+import { activeThread, lockThread } from '../thread.ts';
 import { transaction } from '../transaction.ts';
 import type { WorkConsumers } from '../work-admission.ts';
 import { chiefOfStaffAgent, type AgentRegistry } from './registry.ts';
@@ -49,7 +49,7 @@ export function digestMessages(digest: Digest, agentTitle: string) {
   const intro = [
     `**Morning digest from the ${agentTitle}**`,
     decisions.length
-      ? `${decisions.length === 1 ? '1 decision needs' : `${decisions.length} decisions need`} you. Reply yes or no to each one below, and your reply answers that exact approval.`
+      ? `${decisions.length === 1 ? '1 decision needs' : `${decisions.length} decisions need`} you. Use reply on each decision below and answer yes or no. Only a reply to a decision answers it.`
       : 'No decisions are waiting on you.',
   ].join('\n\n');
   const asks = decisions.map((item, index) =>
@@ -60,7 +60,7 @@ export function digestMessages(digest: Digest, agentTitle: string) {
       `Why: ${item.why}`,
       `If you wait: ${item.ifWaiting}`,
       ...(item.urgent ? [`Urgent: ${item.urgent}`] : []),
-      'Reply yes to approve or no to decline.',
+      'Reply to this message with yes to approve or no to decline.',
     ].join('\n'),
   );
   const section = (title: string, lines: string[]) =>
@@ -144,18 +144,20 @@ export function createDigest(options: {
       client: clientTitle,
       agent: card.agentTitle,
     });
+    const thread = await activeThread(pool, ownerId);
     const questions = new Map(
       (
         await pool.query<{ id: string; text: string }>(
-          'SELECT id,text FROM messages WHERE owner_id=$1 AND id=ANY($2::uuid[])',
-          [ownerId, queued.map((item) => item.messageId)],
+          `SELECT id,text FROM messages WHERE owner_id=$1 AND id=ANY($2::uuid[])
+           AND thread_id=$3 AND hidden_at IS NULL`,
+          [ownerId, queued.map((item) => item.messageId), thread.id],
         )
       ).rows.map((row) => [row.id, row.text]),
     );
-    const decisions = queued.map((item) => ({
-      ...item,
-      question: questions.get(item.messageId) ?? item.title ?? item.action,
-    }));
+    const decisions = queued.flatMap((item) => {
+      const question = questions.get(item.messageId);
+      return question === undefined ? [] : [{ ...item, question }];
+    });
     const escalations = (
       await pool.query<{ task_id: string; detail: string; created_at: Date }>(
         `SELECT v.task_id,v.detail,v.created_at FROM agent_card_activity v
@@ -274,16 +276,19 @@ export function createDigest(options: {
         [ownerId],
       )
     ).rows[0]?.posted_at;
-    const since = previous ?? new Date(Date.now() - 24 * 60 * 60_000);
+    const until = new Date();
+    const since = previous ?? new Date(until.getTime() - 24 * 60 * 60_000);
     const digest = await collect(since);
     const texts = digestMessages(digest, agent.title);
     const result = await transaction(async (client) => {
-      const claimed = await client.query(
-        `INSERT INTO agent_digests(owner_id,day) VALUES($1,to_char(now() AT TIME ZONE $2,'YYYY-MM-DD'))
-         ON CONFLICT DO NOTHING`,
-        [ownerId, digestTimeZone],
-      );
-      if (!claimed.rowCount) return undefined;
+      const day = (
+        await client.query<{ day: string }>(
+          `INSERT INTO agent_digests(owner_id,day,posted_at) VALUES($1,to_char($3::timestamptz AT TIME ZONE $2,'YYYY-MM-DD'),$3)
+           ON CONFLICT DO NOTHING RETURNING day`,
+          [ownerId, digestTimeZone, until],
+        )
+      ).rows[0]?.day;
+      if (!day) return undefined;
       const thread = await lockThread(client, ownerId);
       const source = await chatSource(client);
       const replyTo = [null, ...digest.decisions.map((item) => item.messageId), null];
@@ -302,10 +307,11 @@ export function createDigest(options: {
           ]);
         ids.push(id);
       }
-      await client.query(
-        `UPDATE agent_digests SET message_ids=$3 WHERE owner_id=$1 AND day=to_char(now() AT TIME ZONE $2,'YYYY-MM-DD')`,
-        [ownerId, digestTimeZone, ids],
-      );
+      await client.query('UPDATE agent_digests SET message_ids=$3 WHERE owner_id=$1 AND day=$2', [
+        ownerId,
+        day,
+        ids,
+      ]);
       return { messageIds: ids, telegram: Boolean(source) };
     }, pool);
     if (!result) return { posted: false, reason: "Today's digest was already posted." };
@@ -315,15 +321,15 @@ export function createDigest(options: {
 
   async function start(scheduler: { boss: PgBoss; consumers?: WorkConsumers }) {
     const { boss, consumers } = scheduler;
-    await boss.createQueue(digestQueue, { retryLimit: 0 });
+    await boss.createQueue(digestQueue, { retryLimit: 3, retryDelay: 300 });
     await boss.schedule(digestQueue, digestCron, {}, { tz: digestTimeZone });
     const work = () =>
       boss.work(digestQueue, async () => {
-        const outcome = await post().catch((error) => {
+        const outcome = await post().catch((error: unknown) => {
           logFailure('agent_digest', error);
-          return undefined;
+          throw error;
         });
-        if (outcome && !outcome.posted)
+        if (!outcome.posted)
           console.error(JSON.stringify({ event: 'agent_digest_skipped', reason: outcome.reason }));
       });
     if (consumers)

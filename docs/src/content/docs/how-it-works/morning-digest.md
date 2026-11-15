@@ -24,11 +24,11 @@ The digest is a short run of messages in this order:
    - **Anomalies found**: anomalies the [watchers](/how-it-works/watchers/) opened since the last digest, and whether their investigation is still open.
    - **Spend this month**: each client's model spend against its monthly cap, and the reason when its cards are paused at the cap.
 
-"Since the last digest" means since the previous digest was posted, or the last 24 hours for the first one. One digest is posted per Eastern calendar day, even if the schedule fires twice.
+"Since the last digest" means since the previous digest was posted, or the last 24 hours for the first one. One digest is posted per Eastern calendar day, even if the schedule fires twice. A run that fails is retried up to three times, five minutes apart.
 
 ## Approving and declining from the digest
 
-Each decision message is a reply to the approval it describes. To answer, the owner replies **yes** or **no** to that message, in Nod or in Telegram. Nod reads the reply against that exact approval, the same way it reads a reply to the original question, so a yes runs only the saved action and anything other than a clear yes doesn't run it. The approval card on the card's own page in Nod still works too.
+Each decision message is a reply to the approval it describes. To answer, the owner replies **yes** or **no** to that message, in Nod or in Telegram. Nod reads the reply against that exact approval, the same way it reads a reply to the original question, so a yes runs only the saved action and anything other than a clear yes doesn't run it. Only a reply answers a decision: a plain yes sent without reply doesn't reach a digest decision. The approval card on the card's own page in Nod still works too. The digest lists only approvals that can still be answered in the current conversation.
 
 Telegram gets the digest when the owner has messaged Nod from Telegram before, because Nod replies in the most recent Telegram conversation. Without one, the digest is in Nod only.
 

@@ -316,6 +316,7 @@ test(
         const { createWatchers } = await import('../src/server/agents/watchers.ts');
         const { createDigest } = await import('../src/server/agents/digest.ts');
         const { createChannels } = await import('../src/server/channels.ts');
+        const { transaction } = await import('../src/server/transaction.ts');
         await createLedger({ pool: db.pool, ownerId }).initialize();
         const budget = createClientBudget({
           pool: db.pool,
@@ -549,6 +550,33 @@ test(
           (await queue.list()).map((item) => item.approvalId),
           [queued[0]!.approvalId],
         );
+        const declined = await approvals.chat.answer({
+          text: 'no',
+          channel: 'web',
+          threadId,
+          replyToMessageId: posted.messageIds[1],
+        });
+        assert.deepEqual(declined, { approvalId: queued[0]!.approvalId, approved: false });
+        await transaction(
+          (client) =>
+            approvals.chat.accept(client, {
+              text: 'no',
+              channel: 'web',
+              threadId,
+              replyToMessageId: posted.messageIds[1],
+              answer: declined!,
+            }),
+          db.pool,
+        );
+        assert.equal(
+          (
+            await db.pool.query<{ status: string }>('SELECT status FROM approvals WHERE id=$1', [
+              queued[0]!.approvalId,
+            ])
+          ).rows[0]?.status,
+          'declined',
+        );
+        assert.deepEqual(await queue.list(), []);
         assert.deepEqual(ran, []);
       },
     );
