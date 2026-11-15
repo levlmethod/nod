@@ -17,7 +17,8 @@ agents/
 │   ├── team.md
 │   ├── router.md
 │   ├── pm.md
-│   └── inbox.md
+│   ├── inbox.md
+│   └── chief-of-staff.md
 └── growth/
     ├── team.md
     ├── growth-lead.md

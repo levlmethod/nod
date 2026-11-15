@@ -64,6 +64,7 @@ export type AgentRegistry = {
 export const routerAgent = 'router';
 export const pmAgent = 'pm';
 export const inboxAgent = 'inbox';
+export const chiefOfStaffAgent = 'chief-of-staff';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -171,7 +172,11 @@ const pmRules = (owners: string) =>
 
 export function cardOwners(registry: AgentRegistry) {
   return [...registry.agents.values()].filter(
-    (agent) => agent.name !== routerAgent && agent.name !== pmAgent && agent.name !== inboxAgent,
+    (agent) =>
+      agent.name !== routerAgent &&
+      agent.name !== pmAgent &&
+      agent.name !== inboxAgent &&
+      agent.name !== chiefOfStaffAgent,
   );
 }
 

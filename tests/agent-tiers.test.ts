@@ -91,6 +91,9 @@ test(
       'growth/team.md': '---\nlead: paid-media\nrouting: Owns paid media.\n---\n',
       'growth/paid-media.md':
         '---\ntitle: Paid Media Analyst\nrole: Runs paid media.\ntools: [apps]\n---\nManage ads.\n',
+      'core/chief-of-staff.md':
+        '---\ntitle: Chief of Staff\nrole: Writes the digest.\ntools: []\n---\nReport.\n',
+      'clients/rkmd.md': '---\ntitle: RKMD\nbudget:\n  monthlyUsd: 300\n---\nSynthetic brief.\n',
       'clients/formulaic.md':
         '---\ntitle: Formulaic\nbudget:\n  monthlyUsd: 500\nconnections:\n  - service: meta\n    account: ads@formulaic.example\n---\nSynthetic brief.\n',
     };
@@ -156,7 +159,8 @@ test(
         return { ok: true };
       },
       undefined,
-      undefined,
+      async (reply) =>
+        /^yes$/i.test(reply.trim()) ? true : /^no$/i.test(reply.trim()) ? false : undefined,
       async (proposal) => ({ question: `Can I run ${proposal.action}?`, action: 'Run it' }),
       undefined,
       queue.asked,
@@ -167,7 +171,7 @@ test(
       ]);
       return { threadId: (await thread.activeThread()).id, turnId };
     };
-    const card = async (title: string) => {
+    const card = async (title: string, extra: Record<string, unknown> = {}) => {
       const submitted = await thread.submitUserMessage(`${title} for Formulaic.`);
       const router = await running(submitted.turnId);
       const task = (await tasks.execute(
@@ -181,6 +185,7 @@ test(
           agent: 'paid-media',
           client: 'formulaic',
           estimateMinutes: 20,
+          ...extra,
         },
         submitted.messageId,
       )) as { id: string };
@@ -299,6 +304,252 @@ test(
             null,
           ),
         );
+      },
+    );
+
+    await t.test(
+      'the morning digest leads with the queue, reports from board, queue and usage records, and a Telegram reply answers the bound approval',
+      async () => {
+        const { createLedger } = await import('../src/server/ledger.ts');
+        const { createClientBudget } = await import('../src/server/agents/client-budget.ts');
+        const { createBoard } = await import('../src/server/agents/board.ts');
+        const { createWatchers } = await import('../src/server/agents/watchers.ts');
+        const { createDigest } = await import('../src/server/agents/digest.ts');
+        const { createChannels } = await import('../src/server/channels.ts');
+        await createLedger({ pool: db.pool, ownerId }).initialize();
+        const budget = createClientBudget({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+        });
+        await budget.initialize();
+        await createWatchers({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+          servers: async () => [],
+          call: async () => ({}),
+        } as never).initialize();
+        const board = createBoard({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+          cards,
+          spend: budget.spend,
+        });
+        const digest = createDigest({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+          board,
+          queue,
+        });
+        await digest.initialize();
+        const threadId = (await thread.activeThread()).id;
+        const posts: Array<{ text: string; replyToMessageId?: string }> = [];
+        let incoming: import('../src/ports/messaging.ts').InboundMessage[] = [];
+        const answered: unknown[] = [];
+        const channels = await createChannels(db.pool, {
+          ownerId,
+          transport: {
+            channels: [
+              {
+                id: 'telegram',
+                status: 'configured',
+                missing: [],
+                accountId: 'bot',
+                allowedSenderIds: ['111'],
+              },
+            ],
+            poll: async (accept) => {
+              const batch = incoming;
+              incoming = [];
+              for (const message of batch) await accept(message);
+            },
+            receive: async () => ({ status: 200, body: {} }),
+            post: async (input) => {
+              posts.push({
+                text: input.text,
+                ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+              });
+              return { id: `provider-${posts.length}`, ids: [`provider-${posts.length}`] };
+            },
+            close: async () => {},
+          },
+          subscribe: () => () => {},
+          intervalMs: 600000,
+          answer: (text, channel, replyToMessageId) =>
+            approvals.chat.answer({ text, channel, threadId, replyToMessageId }),
+          submit: async (text, sourceId, client, channel, messageId, answer, replyToMessageId) => {
+            answered.push(answer);
+            if (answer)
+              return (
+                (await approvals.chat.accept(client, {
+                  text,
+                  channel,
+                  threadId,
+                  sourceId,
+                  clientMessageId: messageId,
+                  answer,
+                  ...(replyToMessageId ? { replyToMessageId } : {}),
+                })) as { turnId: string }
+              ).turnId;
+            const turnId = randomUUID();
+            await client.query(
+              `INSERT INTO turns(id,owner_id,thread_id,session_id,source,source_id,channel,prompt,status)
+               VALUES($1,$2,$3,$3,'user',$4,$5,$6,'succeeded')`,
+              [turnId, ownerId, threadId, sourceId, channel, text],
+            );
+            return turnId;
+          },
+        });
+        t.after(() => channels.close());
+        const say = (messageId: string, text: string, replyToMessageId?: string) => {
+          incoming.push({
+            channelId: 'telegram',
+            accountId: 'bot',
+            senderId: '111',
+            messageId,
+            threadId: 'chat-111',
+            text,
+            ...(replyToMessageId ? { replyToMessageId } : {}),
+            sentAt: new Date(),
+          });
+          return channels.drain();
+        };
+        await say('hello', 'Good night.');
+
+        const finish = (
+          work: { threadId: string; turnId: string },
+          id: string,
+          conclusion: string,
+        ) =>
+          tasks.execute(
+            work,
+            {
+              action: 'finish',
+              id,
+              status: 'done',
+              card: {
+                conclusion,
+                evidence: ['Synthetic report.'],
+                nextAction: 'Keep the budget.',
+                confidence: 'high',
+              },
+            },
+            null,
+          );
+        const done = await card('Report last week ROAS');
+        await finish(done.work, done.task.id, 'ROAS held at 2.4.');
+        const old = await card('Old audit');
+        await finish(old.work, old.task.id, 'Audit done.');
+        await db.pool.query("UPDATE tasks SET closed_at=now()-interval '3 days' WHERE id=$1", [
+          old.task.id,
+        ]);
+        const plan = await card('Plan the launch');
+        const blocked = await card('Write the launch email', { blockedBy: [plan.task.id] });
+        const escalated = await card('Move spend to Taboola');
+        const anomaly = await card('Investigate the ROAS drop');
+        const recording = await db.pool.connect();
+        try {
+          await cards.record(recording, escalated.task.id, {
+            actor: 'pm',
+            action: 'escalate',
+            detail: 'Should Formulaic move $200 from Meta to Taboola?',
+          });
+        } finally {
+          recording.release();
+        }
+        await db.pool.query(
+          `INSERT INTO watcher_cards(owner_id,anomaly_key,task_id,latest,baseline,summary)
+           VALUES($1,'formulaic:ga4:roas',$2,1.2,2.4,'ROAS fell to 1.2 from 2.4.')`,
+          [ownerId, anomaly.task.id],
+        );
+        await db.pool.query(
+          'INSERT INTO model_usage(id,owner_id,turn_id,session_id,cost_usd) VALUES($1,$2,$3,$4,3.25)',
+          [randomUUID(), ownerId, done.work.turnId, done.task.id],
+        );
+        const queued = await queue.list();
+        assert.equal(queued.length, 2);
+
+        const selected = await digest.collect(new Date(Date.now() - 24 * 60 * 60_000));
+        assert.deepEqual(
+          selected.decisions.map((item) => item.approvalId),
+          queued.map((item) => item.approvalId),
+        );
+        assert.equal(selected.decisions[0]?.urgent, 'The dispute window closes tonight.');
+        assert.equal(selected.decisions[1]?.question, 'Can I run GMAIL_SEND_EMAIL?');
+        assert.deepEqual(
+          selected.finished.map(({ id, conclusion }) => ({ id, conclusion })),
+          [{ id: done.task.id, conclusion: 'ROAS held at 2.4.' }],
+        );
+        const stuck = selected.stuck.find((item) => item.id === blocked.task.id);
+        assert.equal(stuck?.state, 'blocked');
+        assert.match(stuck?.reason ?? '', /Plan the launch/);
+        assert.equal(
+          selected.stuck.some((item) => item.id === escalated.task.id),
+          false,
+        );
+        assert.deepEqual(
+          selected.escalations.map(({ id, question }) => ({ id, question })),
+          [{ id: escalated.task.id, question: 'Should Formulaic move $200 from Meta to Taboola?' }],
+        );
+        assert.deepEqual(
+          selected.anomalies.map(({ id, summary, open }) => ({ id, summary, open })),
+          [{ id: anomaly.task.id, summary: 'ROAS fell to 1.2 from 2.4.', open: true }],
+        );
+        const spend = new Map(selected.spend.map((client) => [client.client, client]));
+        assert.equal(spend.get('formulaic')?.capUsd, 500);
+        assert.ok((spend.get('formulaic')?.spentUsd ?? 0) >= 3.25);
+        assert.deepEqual(
+          { spentUsd: spend.get('rkmd')?.spentUsd, capUsd: spend.get('rkmd')?.capUsd },
+          { spentUsd: 0, capUsd: 300 },
+        );
+
+        const posted = await digest.post();
+        assert.ok(posted.posted);
+        assert.equal(posted.telegram, true);
+        assert.equal(posted.messageIds.length, 4);
+        const saved = (
+          await db.pool.query<{
+            id: string;
+            reply_to_message_id: string | null;
+            turn_id: string | null;
+          }>(
+            'SELECT id,reply_to_message_id,turn_id FROM messages WHERE id=ANY($1::uuid[]) ORDER BY created_at',
+            [posted.messageIds],
+          )
+        ).rows;
+        assert.deepEqual(
+          saved.map((row) => row.id),
+          posted.messageIds,
+        );
+        assert.deepEqual(
+          saved.map((row) => row.reply_to_message_id),
+          [null, queued[0]!.messageId, queued[1]!.messageId, null],
+        );
+        assert.deepEqual((await digest.post()).posted, false);
+
+        await channels.drain();
+        const sent = posts.slice(-4);
+        assert.equal(sent.length, 4);
+        assert.match(sent[0]!.text, /2 decisions need you/);
+        assert.match(sent[2]!.text, /Can I run GMAIL_SEND_EMAIL\?/);
+        const provider = `provider-${posts.indexOf(sent[2]!) + 1}`;
+
+        await say('approve', 'yes', provider);
+        assert.deepEqual(answered.at(-1), { approvalId: queued[1]!.approvalId, approved: true });
+        const status = (
+          await db.pool.query<{ status: string }>('SELECT status FROM approvals WHERE id=$1', [
+            queued[1]!.approvalId,
+          ])
+        ).rows[0]?.status;
+        assert.equal(status, 'confirmed');
+        assert.deepEqual(
+          (await queue.list()).map((item) => item.approvalId),
+          [queued[0]!.approvalId],
+        );
+        assert.deepEqual(ran, []);
       },
     );
   },
