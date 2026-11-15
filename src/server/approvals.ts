@@ -280,6 +280,10 @@ export async function createApprovals(
     signal?: AbortSignal,
   ) => Promise<string | ApprovalPresentation>,
   analytics?: CaptureAnalytics,
+  asked?: (
+    client: PoolClient,
+    approval: { id: string; turn_id: string; confirmation_message_id: string },
+  ) => Promise<void>,
 ) {
   const changed = (
     status: 'asked' | 'approved' | 'declined' | 'executed' | 'expired' | 'uncertain',
@@ -535,6 +539,7 @@ export async function createApprovals(
           ],
         )
       ).rows[0];
+      await asked?.(client, approval);
       options.signal?.throwIfAborted();
       return { cached: false as const, approval, question, source: inspected.source };
     };

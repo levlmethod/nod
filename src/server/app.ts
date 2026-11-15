@@ -204,6 +204,7 @@ export interface AppDependencies {
   taskLedger?: () => Promise<import('../shared/contracts.ts').Task[]>;
   activity?: () => Promise<Activity[]>;
   planningTasks?: () => string | undefined;
+  heldMessages?: (ids: string[]) => Promise<string[]>;
 }
 
 export async function createApp(dependencies: AppDependencies = {}) {
@@ -231,16 +232,22 @@ export async function createApp(dependencies: AppDependencies = {}) {
         ),
       ]),
     );
-    return rows.map((message) =>
-      messageView(
+    const held = new Set(
+      (await dependencies.heldMessages?.(
+        rows.flatMap((row) => (row.role === 'assistant' ? [row.id] : [])),
+      )) ?? [],
+    );
+    return rows.map((message) => {
+      const view = messageView(
         message.replyTo && !message.replyTo.isQuote
           ? {
               ...message,
               replyTo: { ...message.replyTo, text: previews.get(message.replyTo.id) ?? '' },
             }
           : message,
-      ),
-    );
+      );
+      return held.has(message.id) ? { ...view, held: true as const } : view;
+    });
   }
   const app = Fastify({
     logger: false,

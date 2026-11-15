@@ -39,6 +39,7 @@ export interface Message {
   answerChoicesPending?: boolean;
   choiceAnswer?: { choiceIds: string[]; text?: string };
   approval?: MessageApproval;
+  held?: true;
   cardAnswer?: true;
   work?: { kind: 'task' | 'schedule'; id: string; title: string };
 }

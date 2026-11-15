@@ -12,6 +12,7 @@ import { answerChoiceInputSchema, answerChoicesSchema } from '../shared/answer-c
 import { presentationInputSchema, type Presentation } from '../shared/presentation.ts';
 import { cardActionParams, cardFinishParams, cardStartParams } from '../shared/cards.ts';
 import { brainstormDescription, brainstormParams } from './brainstorm.ts';
+import { approvalNoteParams } from '../shared/tiers.ts';
 import { proactiveUpdateSchema, sourceReadSchema } from '../shared/proactivity.ts';
 import { Value } from '@sinclair/typebox/value';
 import {
@@ -649,6 +650,7 @@ export const toolDefinitions = {
           stepIndex: Type.Optional(Type.Integer({ minimum: 0 })),
           waitingFor: Type.Optional(taskWaits),
           nextCheck: Type.Optional(taskNextCheck),
+          ...approvalNoteParams,
         },
         { additionalProperties: false },
       ),
