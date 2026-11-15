@@ -374,6 +374,7 @@ Write copy in the client's brand voice.
       assert.equal(row.estimate_minutes, 45);
       assert.equal(Number(row.budget_usd), 4);
       assert.equal(await cards.agentFor(task.id), 'growth-analyst');
+      assert.equal(await cards.typeFor(task.id), 'investigation');
       const bound = bindAgent(
         registry,
         { threadId: turn.threadId, sessionId: task.id },
@@ -797,3 +798,146 @@ Write copy in the client's brand voice.
     });
   },
 );
+
+const skillFile = (name: string, body: string) => `---
+name: ${name}
+description: ${name} procedure for the fixture.
+---
+
+${body}
+`;
+
+const builtInSkills = {
+  catalog: [{ name: 'research', description: 'Research a question.' }],
+  read(name: string) {
+    if (name !== 'research') throw new Error('Select a skill from the skill library.');
+    return {
+      name,
+      file: 'SKILL.md',
+      content: skillFile('research', 'Cite every source you used.'),
+    };
+  },
+};
+
+test("a card's required and card-type skills are in full in its first turn and listed in its activity", async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'growth/team.md': team('growth-analyst'),
+    'growth/growth-analyst.md': `---
+title: Growth Analyst
+role: Finds why a client's growth metrics moved.
+tools: [apps, send_message]
+skills: [attribution, research]
+cardSkills:
+  investigation: [anomaly-triage]
+  brainstorm: [idea-rounds]
+---
+Investigate metric changes with evidence.
+`,
+  });
+  const skillsRoot = await configRoot({
+    'attribution/SKILL.md': skillFile(
+      'attribution',
+      'Compare GA4 sessions with ad platform clicks.',
+    ),
+    'anomaly-triage/SKILL.md': skillFile('anomaly-triage', 'Rule out tracking breaks first.'),
+    'idea-rounds/SKILL.md': skillFile('idea-rounds', 'Write ideas privately first.'),
+  });
+  try {
+    const threadId = randomUUID();
+    const sessionId: string = randomUUID();
+    const oddSession: string = randomUUID();
+    const binding = createAgentBinding({
+      knownTools: ['task', 'ask_user', 'apps', 'send_message'],
+      cardAgent: async (id) =>
+        [sessionId, oddSession].includes(id) ? 'growth-analyst' : undefined,
+      cardType: async (id) => (id === sessionId ? 'investigation' : 'constructor'),
+      root,
+      skills: { root: skillsRoot, library: builtInSkills },
+    });
+    const activity: Array<[string, string]> = [];
+    const { agent } = await binding.bind({
+      threadId,
+      sessionId,
+      emit: async (type, summary) => {
+        activity.push([type, summary]);
+      },
+    });
+    let checked = false;
+    await runAs(agent, async (_tools, options) => {
+      assert.match(options.systemPrompt, /Compare GA4 sessions with ad platform clicks\./);
+      assert.match(options.systemPrompt, /Cite every source you used\./);
+      assert.match(options.systemPrompt, /Rule out tracking breaks first\./);
+      assert.doesNotMatch(options.systemPrompt, /Write ideas privately first\./);
+      assert.match(
+        options.compactInstructions?.systemPrompt ?? '',
+        /Rule out tracking breaks first\./,
+      );
+      checked = true;
+    });
+    assert.ok(checked);
+    assert.equal(activity.length, 1);
+    assert.equal(activity[0]![0], 'step');
+    for (const name of ['attribution', 'research', 'anomaly-triage'])
+      assert.ok(activity[0]![1].includes(name));
+    assert.ok(!activity[0]![1].includes('idea-rounds'));
+    const untyped = await binding.bind({ threadId, sessionId: oddSession });
+    assert.match(untyped.agent?.instructions ?? '', /Cite every source you used\./);
+    assert.doesNotMatch(untyped.agent?.instructions ?? '', /Rule out tracking breaks first\./);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(skillsRoot, { recursive: true, force: true });
+  }
+});
+
+test('an agent naming a skill that does not exist is rejected at load with the name, and its cards run fail-closed', async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'growth/team.md': team('growth-lead'),
+    'growth/growth-lead.md': `---
+title: Growth Lead
+role: Owns growth outcomes for each client.
+tools: [task]
+skills: [research]
+---
+Lead the growth team.
+`,
+    'growth/growth-analyst.md': `---
+title: Growth Analyst
+role: Finds why a client's growth metrics moved.
+tools: [apps]
+cardSkills:
+  investigation: [anomaly-triag]
+---
+Investigate metric changes with evidence.
+`,
+  });
+  const logged = console.error;
+  console.error = () => {};
+  try {
+    const sessionId = randomUUID();
+    const binding = createAgentBinding({
+      knownTools: ['task', 'ask_user', 'apps'],
+      cardAgent: async () => 'growth-analyst',
+      cardType: async () => 'investigation',
+      root,
+      skills: { root: join(root, 'no-skills'), library: builtInSkills },
+    });
+    const registry = (await binding.registry())!;
+    assert.ok(registry.agents.has('growth-lead'));
+    assert.ok(!registry.agents.has('growth-analyst'));
+    assert.deepEqual(
+      registry.problems.map((problem) => problem.path),
+      ['growth/growth-analyst.md'],
+    );
+    assert.match(registry.problems[0]!.reason, /anomaly-triag/);
+    const { agent } = await binding.bind({ threadId: randomUUID(), sessionId });
+    assert.deepEqual(agent?.tools, ['task', 'ask_user', 'send_message']);
+    assert.match(agent?.instructions ?? '', /missing or invalid/);
+  } finally {
+    console.error = logged;
+    await rm(root, { recursive: true, force: true });
+  }
+});

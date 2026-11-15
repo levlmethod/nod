@@ -4,6 +4,13 @@ import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { parse } from 'yaml';
 import type { RuntimeContext } from '../../ports/agent.ts';
+import {
+  loadAgentSkills,
+  rejectMissingSkills,
+  requiredSkills,
+  skillInstructions,
+  type AgentSkillSources,
+} from './skills.ts';
 
 const names = Type.Array(Type.String({ minLength: 1 }));
 
@@ -216,7 +223,9 @@ export function createAgentBinding(options: {
   knownTools: readonly string[];
   cardAgent: (sessionId: string) => Promise<string | undefined>;
   askedAgent?: (sessionId: string) => Promise<string | undefined>;
+  cardType?: (sessionId: string) => Promise<string | undefined>;
   root?: string;
+  skills?: AgentSkillSources;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
   if (!root)
@@ -227,24 +236,43 @@ export function createAgentBinding(options: {
   let reported = '';
   const load = async () => {
     const registry = await loadAgentRegistry(resolve(root), options.knownTools);
+    const skills = loadAgentSkills(options.skills ?? {});
+    rejectMissingSkills(registry, skills);
     const problems = JSON.stringify(registry.problems);
     if (problems !== reported) {
       reported = problems;
       for (const { path, reason } of registry.problems)
         console.error(JSON.stringify({ event: 'agent_config_rejected', path, reason }));
     }
-    return registry;
+    return { registry, skills };
   };
   void load();
   return {
-    registry: load,
-    bind: async (context: BindingContext) => {
+    registry: async () => (await load()).registry,
+    bind: async (context: BindingContext & Partial<Pick<RuntimeContext, 'emit'>>) => {
       if (context.proactivity) return {};
-      if (context.sessionId === context.threadId) return bindAgent(await load(), context);
-      const cardAgent = await options.cardAgent(context.sessionId);
-      if (cardAgent) return bindAgent(await load(), context, cardAgent);
-      const asked = await options.askedAgent?.(context.sessionId);
-      return asked ? bindAgent(await load(), context, asked, 'asked') : {};
+      const chat = context.sessionId === context.threadId;
+      const cardAgent = chat ? routerAgent : await options.cardAgent(context.sessionId);
+      const asked = cardAgent ? undefined : await options.askedAgent?.(context.sessionId);
+      const name = cardAgent ?? asked;
+      if (!name) return {};
+      const { registry, skills } = await load();
+      const bound = bindAgent(
+        registry,
+        context,
+        chat ? undefined : name,
+        asked ? 'asked' : 'owner',
+      );
+      const config = registry.agents.get(name);
+      if (!bound.agent || !config) return bound;
+      const names = requiredSkills(
+        config,
+        chat || asked ? undefined : await options.cardType?.(context.sessionId),
+      );
+      if (!names.length) return bound;
+      const instructions = `${bound.agent.instructions}\n\n${skillInstructions(skills, names)}`;
+      if (!chat) await context.emit?.('step', `Loaded skills: ${names.join(', ')}`);
+      return { agent: { ...bound.agent, instructions } };
     },
   };
 }

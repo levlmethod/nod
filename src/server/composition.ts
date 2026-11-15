@@ -886,16 +886,18 @@ async function initializeApplication(
       : undefined;
   };
   const mailCheck = createMailCheck({ curator, decisions });
+  const skillLibrary = createSkillLibrary(
+    fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
+    coreSkills,
+  );
   const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
   const agents = createAgentBinding({
     knownTools: Object.keys(toolDefinitions),
     cardAgent: cards.agentFor,
     askedAgent: cards.askedAgentFor,
+    cardType: cards.typeFor,
+    skills: { library: skillLibrary },
   });
-  const skillLibrary = createSkillLibrary(
-    fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
-    coreSkills,
-  );
   const analyzeImages =
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
