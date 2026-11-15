@@ -70,9 +70,11 @@ Each threshold has exactly one of `drop`, `rise`, `above`, `below` and `pace`. A
 
 ## Watchers only read
 
-A watcher calls only a tool that reads. Before any call, a tool is refused when its server marks it as not read-only or destructive, or its name contains a write word such as create, send, update, delete or refund. Otherwise it runs when its server marks it read-only or its name contains a read word such as get, list, search, query or report. A refused tool is never called, and the watcher logs `watcher_check_failed` with the tool and the reason.
+A watcher calls only a tool whose name is a read. Before any call, the tool is refused when its server hints that it is not read-only or is destructive, when its name has a write word such as create, send, update, delete, refund, spam or sync, or when its name has no read word such as get, list, search, query or fetch (GA4's `run_report` also counts as a read). A server's read-only hint alone never lets a tool through. A refused tool is never called, and the watcher logs `watcher_check_failed` with the tool and the reason.
 
-A failed read, a missing connection, an agent that can't own a card or a path that finds something other than numbers is logged the same way, with the threshold's key and the specific reason. The other thresholds still run.
+Watcher reads don't go through the trust check, because the check would be a model request every hour. The owner writes the exact tool and its input in the client file in git, which plays the part of the owner's words, and the code refuses anything that isn't a read. Agents can't change client files.
+
+A failed read, a missing connection, an agent that can't own a card or a path that finds something other than numbers is logged the same way, with the threshold's key and the specific reason, but never with the data the source returned. The other thresholds still run.
 
 ## Investigation cards
 
@@ -80,4 +82,6 @@ An anomaly opens a card of type `investigation` for the threshold's client and a
 
 The card starts like work Nod starts on its own: no owner message stands behind it, so every action it takes beyond a read goes through the trust check against the owner's notification rule and rules, and asks the owner otherwise.
 
-While a card for an anomaly is open, the same anomaly opens no second card. Once the card closes or is stopped, the next hour that still trips opens a new one.
+An anomaly opens one card and then holds. While the metric stays past its threshold, no new card opens, even after the card closes or is stopped. Once an hourly check finds the metric back inside its threshold, the next trip opens a new card.
+
+Like the owner's own schedules, watchers keep running when private preparation is paused or during quiet hours. Spend pace counts the days of the month in the owner's time zone.

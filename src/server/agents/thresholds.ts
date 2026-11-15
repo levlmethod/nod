@@ -54,10 +54,20 @@ export type Trip = { latest: number; baseline?: number; summary: string };
 const round = (value: number) => Math.round(value * 100) / 100;
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
+function daysInMonth(now: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric' })
+    .formatToParts(now)
+    .reduce<Record<string, number>>(
+      (all, part) => ({ ...all, [part.type]: Number(part.value) }),
+      {},
+    );
+  return new Date(Date.UTC(parts.year!, parts.month!, 0)).getUTCDate();
+}
+
 export function checkThreshold(
   threshold: Threshold,
   series: readonly number[],
-  now = new Date(),
+  at: { now?: Date; timeZone?: string } = {},
 ): Trip | undefined {
   if (!series.length) throw new Error('The source returned no numbers to check.');
   const latest = series[series.length - 1]!;
@@ -71,7 +81,7 @@ export function checkThreshold(
       : undefined;
   if (threshold.pace) {
     const spent = round(series.reduce((total, value) => total + value, 0));
-    const days = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+    const days = daysInMonth(at.now ?? new Date(), at.timeZone ?? 'UTC');
     const expected = (threshold.pace.monthlyUsd * series.length) / days;
     return spent > expected * (1 + threshold.pace.over)
       ? {
@@ -126,7 +136,9 @@ function payload(result: unknown) {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new Error(`The source tool did not return JSON: ${text.slice(0, 200)}`);
+    throw new Error(
+      `The source tool returned ${text.length} characters that are not JSON and no structured content.`,
+    );
   }
 }
 
@@ -156,7 +168,7 @@ export function readSeries(result: unknown, source: Threshold['source']) {
     const number = typeof item === 'number' ? item : typeof item === 'string' ? Number(item) : NaN;
     if (!Number.isFinite(number))
       throw new Error(
-        `values ${source.values} found ${JSON.stringify(item)?.slice(0, 80)} at position ${index}, which is not a number.`,
+        `values ${source.values} found ${item === null ? 'null' : Array.isArray(item) ? 'a list' : typeof item} at position ${index}, which is not a number.`,
       );
     return number;
   });
@@ -165,15 +177,14 @@ export function readSeries(result: unknown, source: Threshold['source']) {
 }
 
 const readVerbs = new Set(
-  'get list read search find count query report metadata tables describe fetch status lookup'.split(
-    ' ',
-  ),
+  'get list read search find count query metadata tables describe fetch lookup'.split(' '),
 );
 const writeVerbs = new Set(
-  'create update delete remove send reply forward archive refund submit post publish write set put patch start retry swap make pay cancel approve label trash mark insert upsert add animate rebuild run_script execute'.split(
+  'create update delete remove send reply forward archive refund submit post publish write set put patch start retry swap make pay cancel approve label trash mark insert upsert add animate rebuild script exec execute spam flag block sync move copy upload import'.split(
     ' ',
   ),
 );
+const readNames = [/_run_report$/];
 
 export function writeRefusal(tool: DiscoveredTool | undefined, name: string) {
   if (!tool) return `${name} is not a tool on this connection.`;
@@ -183,7 +194,8 @@ export function writeRefusal(tool: DiscoveredTool | undefined, name: string) {
     hints.readOnlyHint === false ||
     hints.destructiveHint === true ||
     words.some((word) => writeVerbs.has(word));
-  if (!write && (hints.readOnlyHint === true || words.some((word) => readVerbs.has(word))))
-    return undefined;
-  return `${name} is not a read-only tool, so a watcher can't call it. Watchers only read: name a tool the server marks read-only or whose name is a read such as get, list, search or report.`;
+  const read =
+    words.some((word) => readVerbs.has(word)) || readNames.some((pattern) => pattern.test(name));
+  if (!write && read) return undefined;
+  return `${name} is not a read-only tool, so a watcher can't call it. Watchers only call a tool whose name is a read, such as get, list, search or query, with no write word in it and no server hint that it writes.`;
 }

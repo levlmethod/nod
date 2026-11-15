@@ -40,9 +40,9 @@ export function createWatchers(options: {
 
   async function check(
     client: ClientConfig,
-    name: string,
     threshold: Threshold,
     servers: ConnectedMcpServer[],
+    timeZone: string,
   ): Promise<Trip | undefined> {
     const server = servers.find(
       (item) =>
@@ -66,7 +66,7 @@ export function createWatchers(options: {
       tool: threshold.source.tool,
       input: threshold.source.input ?? {},
     });
-    return checkThreshold(threshold, readSeries(result, threshold.source));
+    return checkThreshold(threshold, readSeries(result, threshold.source), { timeZone });
   }
 
   async function open(registry: AgentRegistry, anomaly: Anomaly, threshold: Threshold) {
@@ -74,14 +74,13 @@ export function createWatchers(options: {
     const agent = registry.agents.get(threshold.agent)!;
     return transaction(async (db: PoolClient) => {
       await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${ownerId}:${anomaly.key}`]);
-      const open = (
+      const held = (
         await db.query(
-          `SELECT 1 FROM watcher_cards w JOIN tasks t ON t.id=w.task_id AND t.owner_id=w.owner_id
-           WHERE w.owner_id=$1 AND w.anomaly_key=$2 AND t.state='open'`,
+          'SELECT 1 FROM watcher_cards WHERE owner_id=$1 AND anomaly_key=$2 AND cleared_at IS NULL',
           [ownerId, anomaly.key],
         )
       ).rowCount;
-      if (open) return false;
+      if (held) return false;
       const taskId = randomUUID();
       const metric = `${threshold.source.tool} ${threshold.source.values}`;
       const prompt = `Watcher anomaly for ${client.title}: ${anomaly.name}. ${metric}: ${anomaly.trip.summary}\nFind out why this metric moved, using only ${client.title}'s connections. Close the card with the cause as the conclusion, the numbers as evidence, the proposed fix as nextAction with its tier (tier 1 if the fix only reads, drafts or reduces spend; tier 2 if it raises spend, publishes, reaches a customer or client, or deletes), and your confidence.`;
@@ -148,6 +147,7 @@ export function createWatchers(options: {
         baseline double precision,
         summary text NOT NULL,
         opened_at timestamptz NOT NULL DEFAULT now(),
+        cleared_at timestamptz,
         PRIMARY KEY (owner_id, task_id)
       );
       CREATE INDEX IF NOT EXISTS watcher_cards_key ON watcher_cards(owner_id,anomaly_key);
@@ -157,10 +157,17 @@ export function createWatchers(options: {
   let initialized: Promise<void> | undefined;
   async function run() {
     const opened: string[] = [];
-    const alreadyOpen: string[] = [];
+    const held: string[] = [];
     const registry = await options.registry();
-    if (!registry) return { opened, alreadyOpen };
+    if (!registry) return { opened, held };
     await (initialized ??= initialize());
+    const timeZone =
+      (
+        await pool.query<{ time_zone: string | null }>(
+          'SELECT time_zone FROM preferences WHERE owner_id=$1',
+          [ownerId],
+        )
+      ).rows[0]?.time_zone ?? 'UTC';
     const owners = new Set(cardOwners(registry).map((agent) => agent.name));
     let servers: ConnectedMcpServer[] | undefined;
     for (const client of registry.clients.values())
@@ -170,16 +177,22 @@ export function createWatchers(options: {
           if (!owners.has(threshold.agent))
             throw new Error(`${threshold.agent} is not an agent that can own a card.`);
           servers ??= await options.servers();
-          const trip = await check(client, name, threshold, servers);
-          if (!trip) continue;
+          const trip = await check(client, threshold, servers, timeZone);
+          if (!trip) {
+            await pool.query(
+              'UPDATE watcher_cards SET cleared_at=now() WHERE owner_id=$1 AND anomaly_key=$2 AND cleared_at IS NULL',
+              [ownerId, key],
+            );
+            continue;
+          }
           const anomaly = { key, client: client.name, name, trip };
           if (await open(registry, anomaly, threshold)) opened.push(key);
-          else alreadyOpen.push(key);
+          else held.push(key);
         } catch (error) {
           problem(`Watcher ${key} failed: ${(error as Error).message}`);
         }
       }
-    return { opened, alreadyOpen };
+    return { opened, held };
   }
 
   function start() {

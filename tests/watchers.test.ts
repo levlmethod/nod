@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import type { ConnectedMcpServer } from '../src/ports/agent.ts';
 import { loadAgentRegistry } from '../src/server/agents/registry.ts';
-import { checkThreshold, type Threshold } from '../src/server/agents/thresholds.ts';
+import { checkThreshold, writeRefusal, type Threshold } from '../src/server/agents/thresholds.ts';
 
 async function configRoot(files: Record<string, string>) {
   const root = await mkdtemp(join(tmpdir(), 'nod-watchers-'));
@@ -57,12 +57,53 @@ test('spend pace compares month-to-date spend with the budget pro-rated by day',
   const now = new Date('2026-11-10T12:00:00Z');
   const tenDays = Array.from({ length: 10 }, () => 100);
   assert.equal(
-    checkThreshold(rule({ pace: { monthlyUsd: 3000, over: 0.2 } }), tenDays, now),
+    checkThreshold(rule({ pace: { monthlyUsd: 3000, over: 0.2 } }), tenDays, { now }),
     undefined,
   );
-  const trip = checkThreshold(rule({ pace: { monthlyUsd: 2000, over: 0.2 } }), tenDays, now);
+  const trip = checkThreshold(rule({ pace: { monthlyUsd: 2000, over: 0.2 } }), tenDays, { now });
   assert.equal(trip?.latest, 1000);
   assert.ok(Math.abs((trip?.baseline ?? 0) - 666.67) < 0.01);
+});
+
+test('spend pace counts the days of the month in the owner time zone', () => {
+  const now = new Date('2026-12-01T03:00:00Z');
+  const tenDays = Array.from({ length: 10 }, () => 100);
+  const threshold = rule({ pace: { monthlyUsd: 3000, over: 0 } });
+  assert.equal(
+    checkThreshold(threshold, tenDays, { now, timeZone: 'America/New_York' }),
+    undefined,
+  );
+  assert.ok(checkThreshold(threshold, tenDays, { now, timeZone: 'UTC' }));
+});
+
+test('only tools that read pass the watcher guard, whatever the server hints', () => {
+  const tool = (name: string, annotations?: Record<string, unknown>) => ({
+    name,
+    inputSchema: {},
+    ...(annotations ? { annotations } : {}),
+  });
+  for (const name of [
+    'growth_meta_get_insights',
+    'growth_ga4_run_report',
+    'growth_stripe_list_charges',
+  ])
+    assert.equal(writeRefusal(tool(name), name), undefined, name);
+  for (const name of [
+    'refund_stripe_create_refund',
+    'mail_gmail_send',
+    'report_spam',
+    'list_and_delete',
+    'run_script',
+    'sync',
+  ])
+    assert.match(writeRefusal(tool(name), name) ?? '', /read-only/, name);
+  assert.match(
+    writeRefusal(tool('growth_meta_get_flags', { readOnlyHint: false }), 'growth_meta_get_flags') ??
+      '',
+    /read-only/,
+  );
+  assert.match(writeRefusal(tool('sync', { readOnlyHint: true }), 'sync') ?? '', /read-only/);
+  assert.match(writeRefusal(undefined, 'growth_meta_get_insights') ?? '', /not a tool/);
 });
 
 test('a drop or rise with fewer than two points never trips, and an empty series is an error', () => {
@@ -346,17 +387,45 @@ test(
     await t.test('the same anomaly does not open a second card while one is open', async () => {
       const run = await watchers.run();
       assert.equal(run.opened.length, 0);
-      assert.equal(run.alreadyOpen.length, 2);
+      assert.equal(run.held.length, 2);
       assert.equal((await openCards()).length, 2);
     });
 
-    await t.test('once the card closes, a fresh trip opens a new card', async () => {
-      await db.pool.query(
-        "UPDATE tasks SET state='done',closed_at=now() WHERE title LIKE '%roas-drop%'",
-      );
-      const run = await watchers.run();
-      assert.equal(run.opened.length, 1);
-      assert.equal((await openCards()).length, 2);
-    });
+    await t.test(
+      'a closed card holds until the metric recovers, then a new trip opens a new card',
+      async () => {
+        await db.pool.query(
+          "UPDATE tasks SET state='done',closed_at=now() WHERE title LIKE '%roas-drop%'",
+        );
+        assert.equal((await watchers.run()).opened.length, 0);
+        rkmdRoas = [3.1, 2.9, 3.0, 3.2, 3.0, 3.1];
+        assert.equal((await watchers.run()).opened.length, 0);
+        rkmdRoas = [3.1, 2.9, 3.0, 3.2, 3.0, 1.2];
+        const run = await watchers.run();
+        assert.deepEqual(run.opened, ['rkmd:roas-drop']);
+        assert.equal((await openCards()).length, 2);
+      },
+    );
+
+    await t.test(
+      'failures name the threshold without copying source data into the log',
+      async () => {
+        const before = problems.length;
+        const leaky = createWatchers({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+          servers: async () => [rkmd, formulaic],
+          call: async () => ({
+            content: [{ type: 'text', text: '{"data":[{"roas":"patient jane@example.com"}]}' }],
+          }),
+          problem: (reason) => problems.push(reason),
+        });
+        await leaky.run();
+        const reasons = problems.slice(before).join('\n');
+        assert.match(reasons, /rkmd:roas-drop.*not a number/);
+        assert.doesNotMatch(reasons, /jane/);
+      },
+    );
   },
 );
