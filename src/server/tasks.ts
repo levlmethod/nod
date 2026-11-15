@@ -29,6 +29,8 @@ import { personalSecret } from './memory-tree.ts';
 import { texts as codeTexts } from './chat-verification.ts';
 import { waitingTurnSql, withdrawnSql, workKindSql, workOriginSql } from './turn-chain.ts';
 import { resemblesTaskAcknowledgement } from '../shared/task-ack.ts';
+import { cardFinishFields, cardStartFields } from '../shared/cards.ts';
+import type { CardHooks } from './agents/cards.ts';
 
 const now = z.string().trim().min(1);
 const waits = z.array(
@@ -53,6 +55,7 @@ const input = z.discriminatedUnion('action', [
       waitingFor: waits.optional(),
       nextCheck: nextCheck.optional(),
       model: modelSelectionInput.optional(),
+      ...cardStartFields,
     })
     .strict(),
   z
@@ -71,7 +74,8 @@ const input = z.discriminatedUnion('action', [
       action: z.literal('finish'),
       id: z.uuid(),
       status: z.enum(['done', 'cancelled']),
-      result: z.string().trim().min(1),
+      result: z.string().trim().min(1).optional(),
+      ...cardFinishFields,
     })
     .strict(),
 ]);
@@ -146,6 +150,7 @@ export function createTasks(options: {
   refresh?: () => void;
   clearBrowser?: (id: string) => Promise<void>;
   validateModel?: (choice: ModelSelection) => ModelSelection;
+  cards?: CardHooks;
 }) {
   const { pool, ownerId } = options;
   const refresh = options.refresh ?? (() => {});
@@ -544,6 +549,11 @@ export function createTasks(options: {
           model ? JSON.stringify(model) : null,
         ],
       );
+      await options.cards?.start(client, {
+        chat: current.session_id === turn.threadId && !current.proactive,
+        taskId: id,
+        request,
+      });
       if (independent) {
         const source = (
           await client.query(
@@ -576,6 +586,13 @@ export function createTasks(options: {
       id = request.id;
       if (current.task_id !== id)
         throw failure('Only the task session can change its progress or result.');
+      const result =
+        request.action === 'finish'
+          ? options.cards
+            ? await options.cards.finish(client, id, request)
+            : request.result
+          : undefined;
+      if (request.action === 'finish' && !result) throw failure('Finishing a task needs result.');
       const updated =
         request.action === 'update'
           ? await client.query(
@@ -596,7 +613,7 @@ export function createTasks(options: {
           : await client.query(
               `UPDATE tasks SET state=$3,result=$4,closed_at=now(),updated_at=now() WHERE id=$1 AND owner_id=$2 AND state='open'
            AND applied_revision=revision`,
-              [id, ownerId, request.status, request.result],
+              [id, ownerId, request.status, result],
             );
       if (!updated.rowCount)
         throw failure(

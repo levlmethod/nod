@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { answerChoiceInputSchema, answerChoicesSchema } from '../shared/answer-choices.ts';
 import { presentationInputSchema, type Presentation } from '../shared/presentation.ts';
+import { cardFinishParams, cardStartParams } from '../shared/cards.ts';
 import { proactiveUpdateSchema, sourceReadSchema } from '../shared/proactivity.ts';
 import { Value } from '@sinclair/typebox/value';
 import {
@@ -633,6 +634,7 @@ export const toolDefinitions = {
               { additionalProperties: false },
             ),
           ),
+          ...cardStartParams,
         },
         { additionalProperties: false },
       ),
@@ -653,7 +655,8 @@ export const toolDefinitions = {
           action: Type.Literal('finish'),
           id: uuid,
           status: literals(['done', 'cancelled']),
-          result: Type.String({ minLength: 1 }),
+          result: Type.Optional(Type.String({ minLength: 1 })),
+          ...cardFinishParams,
         },
         { additionalProperties: false },
       ),

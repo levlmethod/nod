@@ -1070,7 +1070,9 @@ export function createAgentRuntime(dependencies: {
         ...(context.model ? { model: context.model } : {}),
         automatic: Boolean(context.automatic),
         ...(context.proactivity ? { restricted: true, restartable: !context.resumed } : {}),
-        ...(context.agent ? { restricted: true } : {}),
+        ...(context.agent && !context.agent.tools.includes('workspace')
+          ? { restricted: true }
+          : {}),
         ...(context.scheduleCache ? { scheduleCache: context.scheduleCache } : {}),
         ...(sessionId === threadId && !context.proactivity && dependencies.keepWarm
           ? { keepWarm: () => dependencies.keepWarm!(threadId) }

@@ -225,3 +225,249 @@ test('a session with no agent keeps every upstream tool', async () => {
   });
   assert.ok(checked);
 });
+
+const analyst = `---
+title: Growth Analyst
+role: Finds why a client's growth metrics moved.
+tools: [browser, apps, send_message]
+budget:
+  cardUsd: 4
+---
+Investigate metric changes with evidence.
+`;
+
+test(
+  'a Router card runs as its owner agent and closes only with a structured result or one question',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 60_000 },
+  async (t) => {
+    const pg = (await import('pg')).default;
+    const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
+    const schema = `test_cards_${suffix}`;
+    const bossSchema = `test_cards_boss_${suffix}`;
+    const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const url = new URL(process.env.TEST_DATABASE_URL!);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    process.env.DATABASE_URL = url.href;
+    process.env.PGBOSS_SCHEMA = bossSchema;
+    const root = await configRoot({
+      'core/team.md': team('router'),
+      'core/router.md': agentFile(['task', 'ask_user', 'send_message']),
+      'growth/team.md': `---
+lead: growth-analyst
+routing: Owns client growth metrics, traffic and conversion questions.
+---
+`,
+      'growth/growth-analyst.md': analyst,
+    });
+    const db = await import('../src/server/db.ts');
+    const thread = await import('../src/server/thread.ts');
+    const { createTasks } = await import('../src/server/tasks.ts');
+    const { createCards } = await import('../src/server/agents/cards.ts');
+    const { createPersonalService } = await import('../src/server/personal.ts');
+    const { ownerId } = await import('../src/server/config.ts');
+    t.after(async () => {
+      await thread.stopThreadWorkers();
+      await db.pool.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${bossSchema} CASCADE`);
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+      await rm(root, { recursive: true, force: true });
+    });
+    const registry = await loadAgentRegistry(root);
+    assert.deepEqual(registry.problems, []);
+    const cards = createCards({ pool: db.pool, ownerId, registry: async () => registry });
+    const tasks = createTasks({ pool: db.pool, ownerId, cards: cards.hooks });
+    await db.initializeDatabase();
+    await thread.initializeThreads();
+    await createPersonalService({
+      pool: db.pool,
+      ownerId,
+      scheduler: thread.boss,
+      enqueueTurn: thread.enqueueTurn,
+      refresh() {},
+    }).initialize({ workers: false });
+    await tasks.initialize();
+    await cards.initialize();
+    const running = async (turnId: string) => {
+      await db.pool.query("UPDATE turns SET status='running',started_at=now() WHERE id=$1", [
+        turnId,
+      ]);
+      return { threadId: (await thread.activeThread()).id, turnId };
+    };
+    const ask = async (text: string) => {
+      const submitted = await thread.submitUserMessage(text);
+      return { turn: await running(submitted.turnId), messageId: submitted.messageId };
+    };
+    const start = (fields: Record<string, unknown>) => ({
+      action: 'start',
+      title: 'Find the RKMD conversion drop',
+      doneWhen: 'The cause of the drop is known with evidence.',
+      now: 'Reading the conversion reports.',
+      message: 'The Growth Analyst has this.',
+      ...fields,
+    });
+    const cardTurn = async (taskId: string) => {
+      const work = await running(
+        (
+          await db.pool.query<{ id: string }>(
+            'SELECT id FROM turns WHERE session_id=$1 ORDER BY created_at LIMIT 1',
+            [taskId],
+          )
+        ).rows[0]!.id,
+      );
+      await tasks.inherit(work);
+      return work;
+    };
+
+    await t.test('the Router must name an owner agent and an estimate', async () => {
+      const { turn, messageId } = await ask('Why did RKMD conversions drop this week?');
+      await assert.rejects(
+        tasks.execute(turn, start({ estimateMinutes: 30 }), messageId),
+        /owner agent.*growth-analyst/,
+      );
+      await assert.rejects(
+        tasks.execute(turn, start({ agent: 'router', estimateMinutes: 30 }), messageId),
+        /not an agent that can own a card/,
+      );
+      await assert.rejects(
+        tasks.execute(turn, start({ agent: 'growth-analyst' }), messageId),
+        /estimateMinutes/,
+      );
+      assert.equal((await db.pool.query('SELECT 1 FROM tasks')).rowCount, 0);
+      const chat = bindAgent(registry, { threadId: turn.threadId, sessionId: turn.threadId });
+      assert.match(chat.agent?.instructions ?? '', /growth-analyst, Growth Analyst/);
+      assert.match(chat.agent?.instructions ?? '', /Owns client growth metrics/);
+    });
+
+    await t.test('a started card records its owner agent and runs as that agent', async () => {
+      const { turn, messageId } = await ask('Find out why RKMD conversions dropped.');
+      const task = (await tasks.execute(
+        turn,
+        start({ agent: 'growth-analyst', estimateMinutes: 45, cardType: 'investigation' }),
+        messageId,
+      )) as { id: string };
+      const row = (await db.pool.query('SELECT * FROM agent_cards WHERE task_id=$1', [task.id]))
+        .rows[0];
+      assert.equal(row.agent, 'growth-analyst');
+      assert.equal(row.card_type, 'investigation');
+      assert.equal(row.estimate_minutes, 45);
+      assert.equal(Number(row.budget_usd), 4);
+      assert.equal(await cards.agentFor(task.id), 'growth-analyst');
+      const bound = bindAgent(
+        registry,
+        { threadId: turn.threadId, sessionId: task.id },
+        await cards.agentFor(task.id),
+      ).agent;
+      assert.equal(bound?.name, 'growth-analyst');
+      assert.deepEqual(bound?.tools, ['browser', 'apps', 'send_message', 'task']);
+      assert.match(bound?.instructions ?? '', /Investigate metric changes with evidence\./);
+      assert.match(bound?.instructions ?? '', /conclusion, evidence/);
+      const work = await cardTurn(task.id);
+      assert.equal(await cards.isCardTurn(work.turnId), true);
+      assert.equal(await cards.isCardTurn(turn.turnId), false);
+    });
+
+    await t.test('a card finish without a valid result or one question is refused', async () => {
+      const { turn, messageId } = await ask('Check the Formulaic signup drop.');
+      const task = (await tasks.execute(
+        turn,
+        start({ agent: 'growth-analyst', estimateMinutes: 20 }),
+        messageId,
+      )) as { id: string };
+      const work = await cardTurn(task.id);
+      const finish = (fields: Record<string, unknown>) =>
+        tasks.execute(work, { action: 'finish', id: task.id, status: 'done', ...fields }, null);
+      await assert.rejects(
+        finish({ result: 'Looked into it.' }),
+        /missing conclusion, evidence, nextAction, confidence/,
+      );
+      await assert.rejects(
+        finish({ card: { conclusion: 'Paid search lost budget.', nextAction: 'Restore it.' } }),
+        /missing evidence, confidence/,
+      );
+      await assert.rejects(
+        finish({
+          card: { conclusion: 'x', evidence: ['y'], nextAction: 'z', confidence: 'certain' },
+        }),
+        /missing confidence/,
+      );
+      await assert.rejects(
+        finish({ question: 'Should I pause it? Or cut the bid?' }),
+        /exactly one question/,
+      );
+      await assert.rejects(
+        finish({ question: 'Pause it?', card: { conclusion: 'x' } }),
+        /both a result and a question/,
+      );
+      const state = async () =>
+        (await db.pool.query('SELECT state,result FROM tasks WHERE id=$1', [task.id])).rows[0];
+      assert.equal((await state()).state, 'open');
+      await finish({
+        card: {
+          conclusion: 'Signups fell because the paid search budget ran out on Tuesday.',
+          evidence: ['GA4 paid sessions fell 80% from Tuesday.', 'Spend hit the cap on Tuesday.'],
+          nextAction: 'Ask the owner to raise the paid search cap.',
+          confidence: 'High',
+        },
+      });
+      assert.equal((await state()).state, 'done');
+      assert.match((await state()).result, /^Signups fell[\s\S]*Confidence: high$/);
+      assert.deepEqual(
+        (await db.pool.query('SELECT result FROM agent_cards WHERE task_id=$1', [task.id])).rows[0]
+          .result.evidence,
+        ['GA4 paid sessions fell 80% from Tuesday.', 'Spend hit the cap on Tuesday.'],
+      );
+    });
+
+    await t.test('a card can close with exactly one question for the owner', async () => {
+      const { turn, messageId } = await ask('Should we change the RKMD Taboola bids?');
+      const task = (await tasks.execute(
+        turn,
+        start({ agent: 'growth-analyst', estimateMinutes: 15 }),
+        messageId,
+      )) as { id: string };
+      const work = await cardTurn(task.id);
+      await tasks.execute(
+        work,
+        {
+          action: 'finish',
+          id: task.id,
+          status: 'done',
+          question: 'Can I lower the RKMD Taboola bids by 10%?',
+        },
+        null,
+      );
+      const closed = (await db.pool.query('SELECT state,result FROM tasks WHERE id=$1', [task.id]))
+        .rows[0];
+      assert.deepEqual(closed, {
+        state: 'done',
+        result: 'Can I lower the RKMD Taboola bids by 10%?',
+      });
+    });
+  },
+);
+
+test('a card agent that lists workspace keeps the Linux workspace and web tools', async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'core/builder.md': agentFile(['task', 'workspace']),
+  });
+  try {
+    const registry = await loadAgentRegistry(root, ['task', 'ask_user']);
+    assert.deepEqual(registry.problems, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  let checked = false;
+  await runAs(
+    { name: 'builder', title: 'Builder', tools: ['task', 'workspace'], instructions: 'Build.' },
+    async (tools, options) => {
+      assert.deepEqual([...tools.keys()], ['task']);
+      assert.notEqual(options.restricted, true);
+      checked = true;
+    },
+  );
+  assert.ok(checked);
+});

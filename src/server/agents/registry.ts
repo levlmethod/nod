@@ -51,7 +51,8 @@ export type AgentRegistry = {
   problems: Array<{ path: string; reason: string }>;
 };
 
-const routerAgent = 'router';
+export const routerAgent = 'router';
+export const workspaceTool = 'workspace';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -123,7 +124,11 @@ export async function loadAgentRegistry(
             throw new Error(`Another team already has an agent named ${name}.`);
           const config = validated<Static<typeof agentSchema>>(agentSchema, fields);
           const unknown = config.tools.filter(
-            (tool) => knownTools && !tool.startsWith('mcp__') && !knownTools.includes(tool),
+            (tool) =>
+              knownTools &&
+              !tool.startsWith('mcp__') &&
+              tool !== workspaceTool &&
+              !knownTools.includes(tool),
           );
           if (unknown.length) throw new Error(`tools: ${unknown.join(', ')} is not a Nod tool.`);
           members.push({
@@ -148,23 +153,69 @@ export async function loadAgentRegistry(
   return registry;
 }
 
-export function bindAgent(
-  registry: AgentRegistry,
-  context: Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>,
-): { agent?: NonNullable<RuntimeContext['agent']> } {
-  if (context.sessionId !== context.threadId || context.proactivity) return {};
-  const { name, title, tools, instructions } = registry.agents.get(routerAgent) ?? fallbackRouter;
-  return { agent: { name, title, tools, instructions } };
+const cardRules =
+  'You own this card until it closes. Close it with task finish {id, status, card: {conclusion, evidence: [...], nextAction, confidence: low|medium|high}}, or with question set to exactly one question for the owner when you need their decision. Any other finish is refused.';
+
+function roster(registry: AgentRegistry) {
+  const owners = [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+  if (!owners.length)
+    return 'No agent can own a card yet, so tell the owner the agent configs need adding.';
+  const teams = [...registry.teams.values()]
+    .map((team) => {
+      const members = owners.filter((agent) => agent.team === team.name);
+      return members.length
+        ? `Team ${team.name} (lead ${team.lead}): ${team.routing}\n${members.map((agent) => `- ${agent.name}, ${agent.title}: ${agent.role}`).join('\n')}`
+        : '';
+    })
+    .filter(Boolean);
+  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead.\n${teams.join('\n')}`;
 }
 
-export function createAgentBinding(
-  knownTools: readonly string[],
-  root = process.env.NOD_AGENTS_ROOT,
-) {
-  if (!root) return async () => ({});
+type BindingContext = Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>;
+
+export function bindAgent(
+  registry: AgentRegistry,
+  context: BindingContext,
+  cardAgent?: string,
+): { agent?: NonNullable<RuntimeContext['agent']> } {
+  if (context.proactivity) return {};
+  if (context.sessionId === context.threadId) {
+    const { name, title, tools, instructions } = registry.agents.get(routerAgent) ?? fallbackRouter;
+    return {
+      agent: { name, title, tools, instructions: `${instructions}\n\n${roster(registry)}` },
+    };
+  }
+  if (!cardAgent) return {};
+  const config = registry.agents.get(cardAgent);
+  if (!config)
+    return {
+      agent: {
+        name: cardAgent,
+        title: cardAgent,
+        tools: ['task', 'ask_user', 'send_message'],
+        instructions: `The config for ${cardAgent} in agents/ is missing or invalid, so you can't do this card's work. Close the card with one question asking the owner to fix the config or reassign the card.\n${cardRules}`,
+      },
+    };
+  return {
+    agent: {
+      name: config.name,
+      title: config.title,
+      tools: config.tools.includes('task') ? config.tools : [...config.tools, 'task'],
+      instructions: `${config.instructions}\n\n${cardRules}`,
+    },
+  };
+}
+
+export function createAgentBinding(options: {
+  knownTools: readonly string[];
+  cardAgent: (sessionId: string) => Promise<string | undefined>;
+  root?: string;
+}) {
+  const root = options.root ?? process.env.NOD_AGENTS_ROOT;
+  if (!root) return { registry: async () => undefined, bind: async (_context: BindingContext) => ({}) };
   let reported = '';
   const load = async () => {
-    const registry = await loadAgentRegistry(resolve(root), knownTools);
+    const registry = await loadAgentRegistry(resolve(root), options.knownTools);
     const problems = JSON.stringify(registry.problems);
     if (problems !== reported) {
       reported = problems;
@@ -174,8 +225,13 @@ export function createAgentBinding(
     return registry;
   };
   void load();
-  return async (context: Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>) =>
-    context.sessionId === context.threadId && !context.proactivity
-      ? bindAgent(await load(), context)
-      : {};
+  return {
+    registry: load,
+    bind: async (context: BindingContext) => {
+      if (context.proactivity) return {};
+      if (context.sessionId === context.threadId) return bindAgent(await load(), context);
+      const cardAgent = await options.cardAgent(context.sessionId);
+      return cardAgent ? bindAgent(await load(), context, cardAgent) : {};
+    },
+  };
 }

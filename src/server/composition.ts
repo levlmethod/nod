@@ -128,6 +128,7 @@ import { createApprovals, turnOrigin } from './approvals.ts';
 import { createCommunication, publicText } from './communication.ts';
 import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
+import { createCards } from './agents/cards.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -885,7 +886,11 @@ async function initializeApplication(
       : undefined;
   };
   const mailCheck = createMailCheck({ curator, decisions });
-  const bindAgent = createAgentBinding(Object.keys(toolDefinitions));
+  const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
+  const agents = createAgentBinding({
+    knownTools: Object.keys(toolDefinitions),
+    cardAgent: cards.agentFor,
+  });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -1120,6 +1125,7 @@ async function initializeApplication(
   const tasks = createTasks({
     pool,
     ownerId,
+    cards: cards.hooks,
     analytics: captureAnalytics,
     refresh,
     clearBrowser: (id) => adapters.computer.clear(id),
@@ -1128,6 +1134,7 @@ async function initializeApplication(
       : {}),
   });
   await tasks.initialize();
+  await cards.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -2140,7 +2147,7 @@ async function initializeApplication(
                 )
               ).rowCount,
             ));
-        const agentBinding = await bindAgent(context);
+        const agentBinding = await agents.bind(context);
         const run = () =>
           ledger.withTurn(
             context.turnId,
@@ -2169,7 +2176,9 @@ async function initializeApplication(
       recall: personal.recall,
       learnedSkills: learnedSkills.index,
       taskContext: tasks.context,
-      settleTask: tasks.settle,
+      settleTask: async (turn, result) => {
+        if (!(await cards.isCardTurn(turn.turnId))) await tasks.settle(turn, result);
+      },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
         const request = raw as { action?: unknown; model?: unknown } | undefined;
