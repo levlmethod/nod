@@ -2,7 +2,7 @@
 
 A brainstorm card's owner calls one `brainstorm` tool, and the runtime runs the fixed rounds itself with upstream's `delegate` helpers: every participant in parallel for private ideas and again for the cross-build, then one devil's advocate. Code, not the model, decides the number and order of rounds, so a brainstorm always ends, and the private round can't anchor because each helper starts from the topic alone. The owner converges in its own turn by closing the card with a top 3, which the card service checks. Each helper runs with the participant's own instructions, tools and required skills, resolved by the agent binding, instead of the owner's.
 
-The card service keeps each brainstorm in `agent_brainstorms`, refuses a second run once the rounds are saved, checks that the saved rounds are exactly ideas and cross-build from every participant and one devil's advocate, and refuses a top 3 before that.
+The card service keeps each brainstorm in `agent_brainstorms`, refuses a second run while the turn that started one is still live or once the rounds are saved, checks that the saved rounds are exactly ideas and cross-build from every participant and one devil's advocate, and refuses a top 3 before that.
 
 ## Upstream files touched
 

@@ -906,6 +906,10 @@ Compare the client's ranking keywords with three competitors.
         const plan = await hooks.begin({
           participants: ['seo-analyst', 'copywriter', 'paid-analyst'],
         });
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter', 'paid-analyst'] }),
+          /already running/,
+        );
         assert.match(plan.topic, /Ways to grow RKMD signups/);
         assert.match(plan.topic, /A top 3 of signup ideas with reasons\./);
         assert.equal(plan.devilsAdvocate, 'paid-analyst');

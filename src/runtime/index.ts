@@ -121,6 +121,7 @@ const delimitedTools = new Set([
   'apps',
   'files',
   'delegate',
+  'brainstorm',
   'browser',
   'browser_session',
   'sign_in',

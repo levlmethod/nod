@@ -92,6 +92,7 @@ export function createCards(options: {
         owner_id text NOT NULL,
         participants text[] NOT NULL,
         devils_advocate text NOT NULL,
+        turn_id uuid,
         rounds jsonb,
         completed_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
@@ -481,9 +482,12 @@ export function createCards(options: {
           participants: string[] | null;
           devils_advocate: string | null;
           completed: boolean;
+          running: boolean;
         }>(
           `SELECT c.task_id,c.agent,c.card_type,t.title,t.brief,t.done_when,t.state,
-             b.participants,b.devils_advocate,b.completed_at IS NOT NULL AS completed
+             b.participants,b.devils_advocate,b.completed_at IS NOT NULL AS completed,
+             EXISTS(SELECT 1 FROM turns r WHERE r.id=b.turn_id AND r.owner_id=b.owner_id
+               AND r.status IN ('queued','running','waiting')) AS running
            FROM turns u JOIN agent_cards c ON c.task_id=u.task_id AND c.owner_id=u.owner_id
            JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
            LEFT JOIN agent_brainstorms b ON b.task_id=c.task_id AND b.owner_id=c.owner_id
@@ -504,10 +508,17 @@ export function createCards(options: {
       return card;
     };
     return {
-      begin: (input) =>
-        locked(async (client) => {
+      begin: async (input) => {
+        const registry = await options.registry();
+        const resolved = new Map<string, BrainstormParticipant | undefined>();
+        for (const name of new Set(input.participants.map((item) => item.trim())))
+          resolved.set(name, await options.participant?.(name));
+        return locked(async (client) => {
           const card = await session(client);
-          const registry = await options.registry();
+          if (card.running)
+            throw cardRefusal(
+              "This brainstorm's rounds are already running. Wait for them, then converge to a top 3.",
+            );
           if (!registry || !options.participant)
             throw cardRefusal(
               'Agents are off, so brainstorms are unavailable. Set NOD_AGENTS_ROOT to turn them on.',
@@ -534,7 +545,7 @@ export function createCards(options: {
             );
           const participants = [];
           for (const name of names) {
-            const agent = await options.participant(name);
+            const agent = resolved.get(name);
             if (!agent)
               throw cardRefusal(
                 `The config for ${name} in agents/ is missing or invalid, so it can't take part. Pick another agent or ask the owner to fix it.`,
@@ -542,10 +553,10 @@ export function createCards(options: {
             participants.push(agent);
           }
           await client.query(
-            `INSERT INTO agent_brainstorms(task_id,owner_id,participants,devils_advocate)
-             VALUES($1,$2,$3,$4) ON CONFLICT (task_id) DO UPDATE
-             SET participants=EXCLUDED.participants,devils_advocate=EXCLUDED.devils_advocate`,
-            [card.task_id, ownerId, names, devilsAdvocate],
+            `INSERT INTO agent_brainstorms(task_id,owner_id,participants,devils_advocate,turn_id)
+             VALUES($1,$2,$3,$4,$5) ON CONFLICT (task_id) DO UPDATE
+             SET participants=EXCLUDED.participants,devils_advocate=EXCLUDED.devils_advocate,turn_id=EXCLUDED.turn_id`,
+            [card.task_id, ownerId, names, devilsAdvocate, turn.turnId],
           );
           return {
             topic: [card.title, card.brief, `Done when: ${card.done_when}`]
@@ -554,7 +565,8 @@ export function createCards(options: {
             participants,
             devilsAdvocate,
           };
-        }),
+        });
+      },
       save: (rounds) =>
         locked(async (client) => {
           const card = await session(client);
