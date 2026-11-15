@@ -13,8 +13,12 @@ export type CardResult =
       evidence: string[];
       nextAction: string;
       confidence: (typeof cardConfidence)[number];
+      top?: Array<{ idea: string; reason: string }>;
     }
   | { question: string };
+
+export const brainstormCard = 'brainstorm';
+export const brainstormTop = 3;
 
 export const cardStartFields = {
   agent: z.string().trim().min(1).optional(),
@@ -94,6 +98,14 @@ export const cardFinishParams = {
       evidence: Type.Optional(Type.Array(Type.String())),
       nextAction: Type.Optional(Type.String()),
       confidence: Type.Optional(Type.String()),
+      top: Type.Optional(
+        Type.Array(
+          Type.Object({
+            idea: Type.Optional(Type.String()),
+            reason: Type.Optional(Type.String()),
+          }),
+        ),
+      ),
     }),
   ),
   question: Type.Optional(Type.String()),
@@ -108,7 +120,10 @@ export function cardRefusal(message: string) {
 
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
-export function cardResult(input: { card?: unknown; question?: unknown }): CardResult {
+export function cardResult(
+  input: { card?: unknown; question?: unknown },
+  brainstorm = false,
+): CardResult {
   const hasCard = input.card !== undefined;
   const hasQuestion = input.question !== undefined;
   if (hasCard && hasQuestion)
@@ -138,15 +153,37 @@ export function cardResult(input: { card?: unknown; question?: unknown }): CardR
     throw cardRefusal(
       `This card can't close: the result is missing ${missing.join(', ')}. ${closeHint}`,
     );
-  return {
+  const result = {
     conclusion: text(card.conclusion),
     evidence,
     nextAction: text(card.nextAction),
     confidence: confidence as (typeof cardConfidence)[number],
   };
+  if (!brainstorm) {
+    if (card.top !== undefined)
+      throw cardRefusal(
+        `Only a brainstorm card closes with top. Remove top from the result. ${closeHint}`,
+      );
+    return result;
+  }
+  const top = (Array.isArray(card.top) ? card.top : []).map((item) => {
+    const entry = (typeof item === 'object' && item !== null ? item : {}) as Record<
+      string,
+      unknown
+    >;
+    return { idea: text(entry.idea), reason: text(entry.reason) };
+  });
+  if (top.length !== brainstormTop || top.some((item) => !item.idea || !item.reason))
+    throw cardRefusal(
+      `This brainstorm can't close: top must be exactly ${brainstormTop} ideas, best first, each with idea and reason. ${closeHint}`,
+    );
+  return { ...result, top };
 }
 
 export function cardResultText(result: CardResult) {
   if ('question' in result) return result.question;
-  return `${result.conclusion}\n\nEvidence:\n${result.evidence.map((item) => `- ${item}`).join('\n')}\n\nNext action: ${result.nextAction}\nConfidence: ${result.confidence}`;
+  const top = result.top
+    ? `Top ${result.top.length}:\n${result.top.map((item, index) => `${index + 1}. ${item.idea}: ${item.reason}`).join('\n')}\n\n`
+    : '';
+  return `${top}${result.conclusion}\n\nEvidence:\n${result.evidence.map((item) => `- ${item}`).join('\n')}\n\nNext action: ${result.nextAction}\nConfidence: ${result.confidence}`;
 }

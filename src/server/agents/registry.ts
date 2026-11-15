@@ -4,6 +4,15 @@ import { Type, type Static } from '@sinclair/typebox';
 import type { ConnectedMcpServer, RuntimeContext } from '../../ports/agent.ts';
 import { clientsFolder, loadClients, wallCard, type ClientConfig } from './clients.ts';
 import { configFile } from './config-file.ts';
+import type { BrainstormParticipant } from '../../ports/brainstorm.ts';
+import { brainstormCard, brainstormTop } from '../../shared/cards.ts';
+import {
+  loadAgentSkills,
+  rejectMissingSkills,
+  requiredSkills,
+  skillInstructions,
+  type AgentSkillSources,
+} from './skills.ts';
 
 const names = Type.Array(Type.String({ minLength: 1 }));
 
@@ -150,6 +159,11 @@ const cardRules =
 const askRules =
   "Another agent asked you a question on their card. The card stays theirs: answer only what was asked, using your tools if you need to check something, and reply with task answer {id, answer}. Don't start, change or close cards from here.";
 
+const brainstormRules = `This is a brainstorm card. Its rounds are fixed: call brainstorm {participants: 3 to 5 other agents, devilsAdvocate?} once to run private ideas, a cross-build and one devil's advocate, then converge yourself to a top 3 and close the card with card.top set to exactly ${brainstormTop} {idea, reason}, best first.`;
+
+const participantRules =
+  "You're taking part in a brainstorm on another agent's card. Answer only the round you're given, from your own role, and keep to what the round asks. You can't start, change or close cards.";
+
 export function cardOwners(registry: AgentRegistry) {
   return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
 }
@@ -169,7 +183,7 @@ function roster(registry: AgentRegistry) {
   const clients = [...registry.clients.values()]
     .map((client) => `- ${client.name}: ${client.title}`)
     .join('\n');
-  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, client set to the one client the work is for, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead. Take the client from the owner's words; when they don't make it clear, ask the owner which client with ask_user before starting the card.\n${teams.join('\n')}\nClients:\n${clients || 'none yet, so tell the owner a client config needs adding under agents/clients/'}`;
+  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, client set to the one client the work is for, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead. When the owner asks for a brainstorm, start a card with cardType ${brainstormCard} owned by the agent who should converge, and name in the brief any agents the owner wants in it. Take the client from the owner's words; when they don't make it clear, ask the owner which client with ask_user before starting the card.\n${teams.join('\n')}\nClients:\n${clients || 'none yet, so tell the owner a client config needs adding under agents/clients/'}`;
 }
 
 type BindingContext = Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>;
@@ -226,42 +240,71 @@ export function createAgentBinding(options: {
   namespaces: (servers: ConnectedMcpServer[]) => string[];
   card: (
     sessionId: string,
-  ) => Promise<{ agent: string; client: string | null; role: 'owner' | 'asked' } | undefined>;
+  ) => Promise<
+    | { agent: string; client: string | null; role: 'owner' | 'asked'; card_type: string | null }
+    | undefined
+  >;
   wallRecords: (
     sessionId: string,
     client: string | null,
   ) => Promise<{ sessionTurns: ReadonlySet<string>; clientCards: ReadonlySet<string> }>;
   root?: string;
+  skills?: AgentSkillSources;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
   if (!root)
     return {
       registry: async () => undefined,
       bind: async (_context: BindingContext): Promise<ReturnType<typeof bindAgent>> => ({}),
+      participant: async (_name: string): Promise<BrainstormParticipant | undefined> => undefined,
     };
   let reported = '';
   const load = async () => {
     const registry = await loadAgentRegistry(resolve(root), options.knownTools);
+    const skills = loadAgentSkills(options.skills ?? {});
+    rejectMissingSkills(registry, skills);
     const problems = JSON.stringify(registry.problems);
     if (problems !== reported) {
       reported = problems;
       for (const { path, reason } of registry.problems)
         console.error(JSON.stringify({ event: 'agent_config_rejected', path, reason }));
     }
-    return registry;
+    return { registry, skills };
   };
   void load();
   return {
-    registry: load,
-    bind: async (context: WallContext): Promise<Partial<RuntimeContext>> => {
+    registry: async () => (await load()).registry,
+    bind: async (
+      context: WallContext & Partial<Pick<RuntimeContext, 'emit'>>,
+    ): Promise<Partial<RuntimeContext>> => {
       if (context.proactivity) return {};
-      if (context.sessionId === context.threadId) return bindAgent(await load(), context);
-      const card = await options.card(context.sessionId);
-      if (!card) return {};
-      const registry = await load();
-      const { agent } = bindAgent(registry, context, card.agent, card.role);
+      const chat = context.sessionId === context.threadId;
+      const card = chat ? undefined : await options.card(context.sessionId);
+      if (!chat && !card) return {};
+      const { registry, skills } = await load();
+      const bound = bindAgent(registry, context, card?.agent, card?.role ?? 'owner');
+      const config = registry.agents.get(card?.agent ?? routerAgent);
+      let agent = bound.agent;
+      if (agent && config) {
+        const cardType = card?.role === 'owner' ? (card.card_type ?? undefined) : undefined;
+        if (cardType === brainstormCard)
+          agent = {
+            ...agent,
+            tools: [...agent.tools, 'brainstorm'],
+            instructions: `${agent.instructions}\n${brainstormRules}`,
+          };
+        const names = requiredSkills(config, cardType);
+        if (names.length) {
+          agent = {
+            ...agent,
+            instructions: `${agent.instructions}\n\n${skillInstructions(skills, names)}`,
+          };
+          if (card) await context.emit?.('step', `Loaded skills: ${names.join(', ')}`);
+        }
+      }
+      if (!card || !agent) return agent ? { agent } : {};
       return wallCard(
-        { ...context, history: context.history ?? [], agent: agent! },
+        { ...context, history: context.history ?? [], agent },
         {
           client: card.client,
           clients: registry.clients,
@@ -269,6 +312,22 @@ export function createAgentBinding(options: {
           ...(await options.wallRecords(context.sessionId, card.client)),
         },
       );
+    },
+    participant: async (name: string): Promise<BrainstormParticipant | undefined> => {
+      const { registry, skills } = await load();
+      const config = registry.agents.get(name);
+      if (!config || name === routerAgent) return undefined;
+      const names = requiredSkills(config, brainstormCard);
+      return {
+        name,
+        title: config.title,
+        tools: config.tools,
+        instructions: [
+          config.instructions,
+          participantRules,
+          ...(names.length ? [skillInstructions(skills, names)] : []),
+        ].join('\n\n'),
+      };
     },
   };
 }

@@ -888,18 +888,24 @@ async function initializeApplication(
       : undefined;
   };
   const mailCheck = createMailCheck({ curator, decisions });
-  const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
+  const skillLibrary = createSkillLibrary(
+    fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
+    coreSkills,
+  );
+  const cards = createCards({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    participant: (name) => agents.participant(name),
+  });
   const agents = createAgentBinding({
     knownTools: Object.keys(toolDefinitions),
     namespaces: (servers) => mcpNamespaces(servers).map(({ namespace }) => namespace),
     card: cards.cardFor,
     wallRecords: cards.wallRecords,
+    skills: { library: skillLibrary },
   });
   const clientBudget = createClientBudget({ pool, ownerId, registry: () => agents.registry() });
-  const skillLibrary = createSkillLibrary(
-    fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
-    coreSkills,
-  );
   const analyzeImages =
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
@@ -2163,6 +2169,9 @@ async function initializeApplication(
                 .runTurn({
                   ...context,
                   ...agentBinding,
+                  ...(agentBinding.agent?.tools.includes('brainstorm')
+                    ? { brainstorm: cards.brainstorm(context) }
+                    : {}),
                   runtimeHost: desktopMode ? 'desktop' : 'server',
                 })
                 .finally(() => proactivity.release(context.turnId)),

@@ -153,7 +153,12 @@ test('without NOD_AGENTS_ROOT the main chat runs unbound, as upstream Nod does',
   const binding = createAgentBinding({
     knownTools: ['task'],
     namespaces,
-    card: async () => ({ agent: 'growth-analyst', client: 'rkmd', role: 'owner' as const }),
+    card: async () => ({
+      agent: 'growth-analyst',
+      client: 'rkmd',
+      role: 'owner' as const,
+      card_type: null,
+    }),
     wallRecords: async () => ({ sessionTurns: new Set(), clientCards: new Set() }),
     root: '',
   });
@@ -484,6 +489,30 @@ tools: [send_message]
 ---
 Write copy in the client's brand voice.
 `,
+      'growth/paid-analyst.md': `---
+title: Paid Analyst
+role: Finds paid media growth.
+tools: [apps]
+---
+Look for paid media wins.
+`,
+      'growth/seo-analyst.md': `---
+title: SEO Analyst
+role: Finds organic search growth.
+tools: [browser]
+skills: [keyword-gaps]
+---
+Look for organic search wins.
+`,
+    });
+    const skillsRoot = await configRoot({
+      'keyword-gaps/SKILL.md': `---
+name: keyword-gaps
+description: Find keyword gaps.
+---
+
+Compare the client's ranking keywords with three competitors.
+`,
     });
     const db = await import('../src/server/db.ts');
     const thread = await import('../src/server/thread.ts');
@@ -498,10 +527,24 @@ Write copy in the client's brand voice.
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
       await rm(root, { recursive: true, force: true });
+      await rm(skillsRoot, { recursive: true, force: true });
     });
     const registry = await loadAgentRegistry(root);
     assert.deepEqual(registry.problems, []);
-    const cards = createCards({ pool: db.pool, ownerId, registry: async () => registry });
+    const agents = createAgentBinding({
+      knownTools: Object.keys(toolDefinitions),
+      namespaces,
+      card: async () => undefined,
+      wallRecords: async () => ({ sessionTurns: new Set(), clientCards: new Set() }),
+      root,
+      skills: { root: skillsRoot },
+    });
+    const cards = createCards({
+      pool: db.pool,
+      ownerId,
+      registry: async () => registry,
+      participant: agents.participant,
+    });
     const tasks = createTasks({ pool: db.pool, ownerId, cards: cards.hooks });
     await db.initializeDatabase();
     await thread.initializeThreads();
@@ -604,6 +647,7 @@ Write copy in the client's brand voice.
         agent: 'growth-analyst',
         client: 'rkmd',
         role: 'owner',
+        card_type: 'investigation',
       });
       const bound = bindAgent(
         registry,
@@ -877,6 +921,7 @@ Write copy in the client's brand voice.
         agent: 'copywriter',
         client: 'formulaic',
         role: 'owner',
+        card_type: 'work',
       });
       assert.equal((await cards.cardFor(parent.id))?.agent, 'growth-analyst');
       await assert.rejects(
@@ -1020,6 +1065,7 @@ Write copy in the client's brand voice.
             agent: 'copywriter',
             client: 'formulaic',
             role: 'asked',
+            card_type: null,
           });
           const binding = createAgentBinding({
             knownTools: Object.keys(toolDefinitions),
@@ -1315,5 +1361,487 @@ Write copy in the client's brand voice.
         assert.deepEqual(await off.read(), { enabled: false, recentDays: 7, clients: [] });
       },
     );
+
+    await t.test(
+      'a brainstorm card runs its rounds once with 3 to 5 other agents and closes only with a top 3',
+      async () => {
+        const { turn, messageId } = await ask('Brainstorm ways to grow RKMD signups.');
+        const task = (await tasks.execute(
+          turn,
+          start({
+            title: 'Ways to grow RKMD signups',
+            doneWhen: 'A top 3 of signup ideas with reasons.',
+            agent: 'growth-analyst',
+            client: 'rkmd',
+            cardType: 'brainstorm',
+            estimateMinutes: 30,
+          }),
+          messageId,
+        )) as { id: string };
+        const work = await cardTurn(task.id);
+        const owner = (
+          await createAgentBinding({
+            knownTools: Object.keys(toolDefinitions),
+            namespaces,
+            card: cards.cardFor,
+            wallRecords: cards.wallRecords,
+            root,
+            skills: { root: skillsRoot },
+          }).bind({ threadId: work.threadId, sessionId: task.id })
+        ).agent;
+        assert.ok(owner?.tools.includes('brainstorm'));
+        const hooks = cards.brainstorm(work);
+        const finish = (fields: Record<string, unknown>) =>
+          tasks.execute(work, { action: 'finish', id: task.id, status: 'done', ...fields }, null);
+        const top = [
+          { idea: 'Landing page for each Taboola audience', reason: 'Cheapest lift.' },
+          { idea: 'Retarget GA4 drop-offs', reason: 'Warm traffic converts.' },
+          { idea: 'Signup offer test', reason: 'Fast to learn.' },
+        ];
+        const card = {
+          conclusion: 'Three ideas survived the critique.',
+          evidence: ['Round 3 critique'],
+          nextAction: 'Start the landing page card.',
+          confidence: 'medium',
+        };
+        await assert.rejects(finish({ card: { ...card, top } }), /brainstorm.*rounds/i);
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter'] }),
+          /3 to 5/,
+        );
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter', 'growth-analyst'] }),
+          /growth-analyst/,
+        );
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter', 'router'] }),
+          /router/,
+        );
+        await assert.rejects(
+          hooks.begin({
+            participants: ['seo-analyst', 'copywriter', 'seo-analyst'],
+          }),
+          /3 to 5/,
+        );
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter', 'brand-strategist'] }),
+          /brand-strategist/,
+        );
+        await assert.rejects(
+          hooks.begin({
+            participants: ['seo-analyst', 'copywriter', 'paid-analyst'],
+            devilsAdvocate: 'growth-analyst',
+          }),
+          /devil/i,
+        );
+        const plan = await hooks.begin({
+          participants: ['seo-analyst', 'copywriter', 'paid-analyst'],
+        });
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter', 'paid-analyst'] }),
+          /already running/,
+        );
+        assert.match(plan.topic, /Ways to grow RKMD signups/);
+        assert.match(plan.topic, /A top 3 of signup ideas with reasons\./);
+        assert.equal(plan.devilsAdvocate, 'paid-analyst');
+        assert.deepEqual(
+          plan.participants.map((agent) => agent.name),
+          ['seo-analyst', 'copywriter', 'paid-analyst'],
+        );
+        const seo = plan.participants[0]!;
+        assert.match(seo.instructions, /Look for organic search wins\./);
+        assert.match(
+          seo.instructions,
+          /Compare the client's ranking keywords with three competitors\./,
+        );
+        assert.deepEqual(seo.tools, ['browser']);
+        assert.doesNotMatch(plan.participants[1]!.instructions, /keyword/);
+        const entries = (text: string) =>
+          ['seo-analyst', 'copywriter', 'paid-analyst'].map((agent) => ({ agent, text }));
+        await assert.rejects(
+          hooks.save([
+            { round: 'ideas', entries: entries('Ideas.') },
+            { round: 'build', entries: entries('Built.') },
+          ]),
+          /round/i,
+        );
+        await assert.rejects(finish({ card: { ...card, top } }), /brainstorm.*rounds/i);
+        await hooks.save([
+          { round: 'ideas', entries: entries('Ideas.') },
+          { round: 'build', entries: entries('Built.') },
+          { round: 'devil', entries: [{ agent: 'paid-analyst', text: 'Critique.' }] },
+        ]);
+        await assert.rejects(
+          hooks.begin({ participants: ['seo-analyst', 'copywriter', 'paid-analyst'] }),
+          /already ran/,
+        );
+        await assert.rejects(finish({ card }), /top/);
+        await assert.rejects(finish({ card: { ...card, top: top.slice(0, 2) } }), /top/);
+        await assert.rejects(
+          finish({ card: { ...card, top: [...top.slice(0, 2), { idea: 'Blog', reason: '' }] } }),
+          /top/,
+        );
+        const closed = (await finish({ card: { ...card, top } })) as { result?: string };
+        const saved = (await db.pool.query('SELECT result FROM tasks WHERE id=$1', [task.id]))
+          .rows[0]!.result as string;
+        assert.ok(saved.includes('Retarget GA4 drop-offs'));
+        assert.ok(saved.indexOf('Landing page') < saved.indexOf('Signup offer test'));
+        assert.ok(closed);
+      },
+    );
+
+    await t.test(
+      'only a brainstorm card closes with a top 3 or runs brainstorm rounds',
+      async () => {
+        const { turn, messageId } = await ask('Check RKMD paid search.');
+        const task = (await tasks.execute(
+          turn,
+          start({ agent: 'growth-analyst', client: 'rkmd', estimateMinutes: 20 }),
+          messageId,
+        )) as { id: string };
+        const work = await cardTurn(task.id);
+        await assert.rejects(
+          cards
+            .brainstorm(work)
+            .begin({ participants: ['seo-analyst', 'copywriter', 'paid-analyst'] }),
+          /brainstorm card/,
+        );
+        await assert.rejects(
+          tasks.execute(
+            work,
+            {
+              action: 'finish',
+              id: task.id,
+              status: 'done',
+              card: {
+                conclusion: 'Budget was capped.',
+                evidence: ['Google Ads change log'],
+                nextAction: 'Raise the cap.',
+                confidence: 'high',
+                top: [{ idea: 'Raise the cap', reason: 'It was capped.' }],
+              },
+            },
+            null,
+          ),
+          /top/,
+        );
+      },
+    );
   },
 );
+
+const skillFile = (name: string, body: string) => `---
+name: ${name}
+description: ${name} procedure for the fixture.
+---
+
+${body}
+`;
+
+const builtInSkills = {
+  catalog: [{ name: 'research', description: 'Research a question.' }],
+  read(name: string) {
+    if (name !== 'research') throw new Error('Select a skill from the skill library.');
+    return {
+      name,
+      file: 'SKILL.md',
+      content: skillFile('research', 'Cite every source you used.'),
+    };
+  },
+};
+
+test("a card's required and card-type skills are in full in its first turn and listed in its activity", async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'growth/team.md': team('growth-analyst'),
+    'growth/growth-analyst.md': `---
+title: Growth Analyst
+role: Finds why a client's growth metrics moved.
+tools: [apps, send_message]
+skills: [attribution, research]
+cardSkills:
+  investigation: [anomaly-triage]
+  brainstorm: [idea-rounds]
+---
+Investigate metric changes with evidence.
+`,
+  });
+  const skillsRoot = await configRoot({
+    'attribution/SKILL.md': skillFile(
+      'attribution',
+      'Compare GA4 sessions with ad platform clicks.',
+    ),
+    'anomaly-triage/SKILL.md': skillFile('anomaly-triage', 'Rule out tracking breaks first.'),
+    'idea-rounds/SKILL.md': skillFile('idea-rounds', 'Write ideas privately first.'),
+  });
+  try {
+    const threadId = randomUUID();
+    const sessionId: string = randomUUID();
+    const oddSession: string = randomUUID();
+    const binding = createAgentBinding({
+      knownTools: ['task', 'ask_user', 'apps', 'send_message'],
+      namespaces,
+      card: async (id) =>
+        [sessionId, oddSession].includes(id)
+          ? {
+              agent: 'growth-analyst',
+              client: null,
+              role: 'owner' as const,
+              card_type: id === sessionId ? 'investigation' : 'constructor',
+            }
+          : undefined,
+      wallRecords: async () => ({ sessionTurns: new Set(), clientCards: new Set() }),
+      root,
+      skills: { root: skillsRoot, library: builtInSkills },
+    });
+    const activity: Array<[string, string]> = [];
+    const { agent } = await binding.bind({
+      threadId,
+      sessionId,
+      emit: async (type, summary) => {
+        activity.push([type, summary]);
+      },
+    });
+    let checked = false;
+    await runAs(agent, async (_tools, options) => {
+      assert.match(options.systemPrompt, /Compare GA4 sessions with ad platform clicks\./);
+      assert.match(options.systemPrompt, /Cite every source you used\./);
+      assert.match(options.systemPrompt, /Rule out tracking breaks first\./);
+      assert.doesNotMatch(options.systemPrompt, /Write ideas privately first\./);
+      assert.match(
+        options.compactInstructions?.systemPrompt ?? '',
+        /Rule out tracking breaks first\./,
+      );
+      checked = true;
+    });
+    assert.ok(checked);
+    assert.equal(activity.length, 1);
+    assert.equal(activity[0]![0], 'step');
+    for (const name of ['attribution', 'research', 'anomaly-triage'])
+      assert.ok(activity[0]![1].includes(name));
+    assert.ok(!activity[0]![1].includes('idea-rounds'));
+    const untyped = await binding.bind({ threadId, sessionId: oddSession });
+    assert.match(untyped.agent?.instructions ?? '', /Cite every source you used\./);
+    assert.doesNotMatch(untyped.agent?.instructions ?? '', /Rule out tracking breaks first\./);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(skillsRoot, { recursive: true, force: true });
+  }
+});
+
+test('an agent naming a skill that does not exist is rejected at load with the name, and its cards run fail-closed', async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'growth/team.md': team('growth-lead'),
+    'growth/growth-lead.md': `---
+title: Growth Lead
+role: Owns growth outcomes for each client.
+tools: [task]
+skills: [research]
+---
+Lead the growth team.
+`,
+    'growth/growth-analyst.md': `---
+title: Growth Analyst
+role: Finds why a client's growth metrics moved.
+tools: [apps]
+cardSkills:
+  investigation: [anomaly-triag]
+---
+Investigate metric changes with evidence.
+`,
+  });
+  const logged = console.error;
+  console.error = () => {};
+  try {
+    const sessionId = randomUUID();
+    const binding = createAgentBinding({
+      knownTools: ['task', 'ask_user', 'apps'],
+      namespaces,
+      card: async () => ({
+        agent: 'growth-analyst',
+        client: null,
+        role: 'owner' as const,
+        card_type: 'investigation',
+      }),
+      wallRecords: async () => ({ sessionTurns: new Set(), clientCards: new Set() }),
+      root,
+      skills: { root: join(root, 'no-skills'), library: builtInSkills },
+    });
+    const registry = (await binding.registry())!;
+    assert.ok(registry.agents.has('growth-lead'));
+    assert.ok(!registry.agents.has('growth-analyst'));
+    assert.deepEqual(
+      registry.problems.map((problem) => problem.path),
+      ['growth/growth-analyst.md'],
+    );
+    assert.match(registry.problems[0]!.reason, /anomaly-triag/);
+    const { agent } = await binding.bind({ threadId: randomUUID(), sessionId });
+    assert.deepEqual(agent?.tools, ['task', 'ask_user', 'send_message']);
+    assert.match(agent?.instructions ?? '', /missing or invalid/);
+  } finally {
+    console.error = logged;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const brainstormers = ['seo-analyst', 'paid-analyst', 'copywriter'].map((name) => ({
+  name,
+  title: `${name} agent`,
+  tools: ['browser', 'send_message'],
+  instructions: `Think as the ${name}. Marker ${name}.`,
+}));
+
+test("a brainstorm runs private ideas in parallel, a cross-build, one devil's advocate, each as its own agent, then leaves convergence to the owner", async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nod-brainstorm-'));
+  const threadId = randomUUID();
+  const helpers: Array<{ who: string; prompt: string; system: string; tools: string[] }> = [];
+  const saved: unknown[] = [];
+  let started = 0;
+  let allStarted!: () => void;
+  const together = new Promise<void>((resolve) => (allStarted = resolve));
+  let result: unknown;
+  const context: RuntimeContext = {
+    threadId,
+    sessionId: randomUUID(),
+    turnId: randomUUID(),
+    prompt: 'Run the brainstorm on growing RKMD signups.',
+    history: [],
+    workspacePath: directory,
+    signal: new AbortController().signal,
+    attachments: [],
+    emit: async () => {},
+    reply: async () => {},
+    delta: () => {},
+    publish: async () => {
+      throw new Error('Not used');
+    },
+    requestCredential: async () => ({ url: '/credentials/fixture' }),
+    integration: async () => ({}),
+    manage: async () => ({}),
+    agent: {
+      name: 'growth-lead',
+      title: 'Growth Lead',
+      tools: ['apps', 'task', 'brainstorm'],
+      instructions: 'Lead growth work. Marker growth-lead.',
+    },
+    brainstorm: {
+      begin: async (input) => {
+        assert.deepEqual(input, {
+          participants: ['seo-analyst', 'paid-analyst', 'copywriter'],
+          devilsAdvocate: 'copywriter',
+        });
+        return {
+          topic: 'Ways to grow RKMD signups this quarter',
+          participants: brainstormers,
+          devilsAdvocate: 'copywriter',
+        };
+      },
+      save: async (rounds) => {
+        saved.push(rounds);
+      },
+    },
+  };
+  const session: Agent = {
+    open: async (options) => ({
+      resumed: false,
+      prompt: async (text) => {
+        if (!options.ephemeral) {
+          const tool = options.tools.find((item) => item.name === 'brainstorm');
+          assert.ok(tool);
+          result = await options.runTool(
+            'brainstorm',
+            {
+              participants: ['seo-analyst', 'paid-analyst', 'copywriter'],
+              devilsAdvocate: 'copywriter',
+            },
+            () =>
+              tool.execute({
+                participants: ['seo-analyst', 'paid-analyst', 'copywriter'],
+                devilsAdvocate: 'copywriter',
+              }),
+          );
+          return;
+        }
+        const who = brainstormers.find((agent) =>
+          options.systemPrompt.includes(`Marker ${agent.name}.`),
+        )!.name;
+        const round = helpers.filter((helper) => helper.who === who).length + 1;
+        helpers.push({
+          who,
+          prompt: text,
+          system: options.systemPrompt,
+          tools: options.tools.map((tool) => tool.name).sort(),
+        });
+        if (helpers.length <= 3) {
+          started += 1;
+          if (started === 3) allStarted();
+          await together;
+        }
+        options.onEvent({ type: 'final', text: `Answer ${round} from ${who}.` });
+      },
+      abort: () => {},
+      dispose: () => {},
+    }),
+    dispose: () => {},
+  };
+  const runtime = createAgentRuntime({
+    agent: session,
+    computer: fakeComputer(),
+    workspace: fakeWorkspace(),
+  });
+  try {
+    await runtime.runTurn(context);
+  } finally {
+    await runtime.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+  assert.deepEqual(
+    helpers.map((helper) => helper.who),
+    [
+      ...helpers.slice(0, 3).map((helper) => helper.who),
+      ...helpers.slice(3, 6).map((helper) => helper.who),
+      'copywriter',
+    ],
+  );
+  assert.equal(helpers.length, 7);
+  assert.deepEqual(
+    new Set(helpers.slice(0, 3).map((helper) => helper.who)),
+    new Set(brainstormers.map((agent) => agent.name)),
+  );
+  assert.deepEqual(
+    new Set(helpers.slice(3, 6).map((helper) => helper.who)),
+    new Set(brainstormers.map((agent) => agent.name)),
+  );
+  for (const helper of helpers) {
+    assert.match(helper.system, new RegExp(`Marker ${helper.who}\\.`));
+    for (const other of [...brainstormers.map((agent) => agent.name), 'growth-lead'])
+      if (other !== helper.who)
+        assert.doesNotMatch(helper.system, new RegExp(`Marker ${other}\\.`));
+    assert.deepEqual(helper.tools, ['browser']);
+    assert.match(helper.prompt, /Ways to grow RKMD signups this quarter/);
+  }
+  for (const helper of helpers.slice(0, 3)) assert.doesNotMatch(helper.prompt, /Answer \d from/);
+  for (const helper of helpers.slice(3, 6))
+    for (const agent of brainstormers)
+      assert.ok(helper.prompt.includes(`Answer 1 from ${agent.name}.`));
+  for (const agent of brainstormers)
+    assert.ok(helpers[6]!.prompt.includes(`Answer 2 from ${agent.name}.`));
+  assert.equal(saved.length, 1);
+  const rounds = saved[0] as Array<{
+    round: string;
+    entries: Array<{ agent: string; text: string }>;
+  }>;
+  assert.deepEqual(
+    rounds.map((round) => [round.round, round.entries.length]),
+    [
+      ['ideas', 3],
+      ['build', 3],
+      ['devil', 1],
+    ],
+  );
+  assert.equal(rounds[2]!.entries[0]!.text, 'Answer 3 from copywriter.');
+  assert.match(JSON.stringify(result), /top/);
+});

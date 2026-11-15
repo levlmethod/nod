@@ -50,8 +50,8 @@ Lead the growth team. Split work into cards for the right analyst.
 | `role`        | Yes      | One line on what the agent is for.                                                                                                         |
 | `tools`       | Yes      | The Nod tools the agent may use, by name. Every other tool is removed from its session, and a name that isn't a Nod tool rejects the file. |
 | `model`       | No       | The model the agent should use. Not used yet.                                                                                              |
-| `skills`      | No       | Skills the agent must follow. Not used yet.                                                                                                |
-| `cardSkills`  | No       | Extra skills per card type. Not used yet.                                                                                                  |
+| `skills`      | No       | Skills the agent must follow, loaded in full into every session it runs. See [Required skills](#required-skills).                          |
+| `cardSkills`  | No       | Extra skills per card type, such as `investigation: [anomaly-triage]`, loaded with `skills` on cards of that type.                         |
 | `connections` | No       | The app connections the agent may use. Not used yet; a card's connections come from its client.                                            |
 | `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; not enforced yet.                                                     |
 | `schedules`   | No       | The agent's recurring schedules. Not used yet.                                                                                             |
@@ -59,6 +59,12 @@ Lead the growth team. Split work into cards for the right analyst.
 | `workflows`   | No       | n8n workflows. Reserved for phase 2 and not used yet.                                                                                      |
 
 Nod reads the folder again at the start of every turn, so an edit takes effect on the next message. A file that can't be read, has no frontmatter, has an unknown or missing field, or sits outside a team folder is skipped. So is a team whose lead isn't one of its agents. Each skipped file is logged as `agent_config_rejected` with its path and reason, and every valid agent still loads.
+
+## Required skills
+
+An agent's `skills`, plus the `cardSkills` listed for the card's type, are added in full to the end of its system prompt before its first turn and on every turn after, so the agent doesn't have to choose to read them. The Router gets its own `skills` the same way. Nod looks for each name first in the fork's `agent-skills/` folder (`agent-skills/<name>/SKILL.md`, or the folder in `NOD_AGENT_SKILLS_ROOT`) and then in Nod's built-in skills. Each card turn adds a `Loaded skills:` line naming them to the card's activity.
+
+A skill name that matches neither, or a skill file that can't be read, rejects the agent's file like any other config problem: it's logged as `agent_config_rejected` with the path and the missing name, and the agent's cards close with a question asking the owner to fix the config.
 
 ## The Router
 
@@ -89,8 +95,19 @@ Cards can depend on and talk to each other without anyone sharing work.
 - **Blockers.** A card started with `blockedBy`, a list of card IDs, waits until all of them settle: done with a conclusion, or stopped. A blocker that closes with a question for the owner still holds its dependents until the owner's reply reopens it and it closes with a conclusion. The blocked card's first turn is held in the queue until then, and when it starts its request includes each blocker's result. Only existing cards can block, so blockers can't form a loop. Child cards settle the same way before their parent is resumed.
 - **Asks.** An agent can ask another agent a question about its card with `task ask {id, agent, question}`. The asked agent answers in its own session, with its own tools and instructions, through `task answer {id, answer}`, and can't start, change or close cards from there. The asking card is resumed with the answer. Each card allows one ask per agent and 3 back-and-forths on it; the 4th question is refused and the ask is flagged for the PM. If the asked agent's turn ends without answering, the next question to that agent records the earlier one as unanswered, counts it toward the 3 and flags the ask.
 
+## Brainstorms
+
+A brainstorm is a card with `cardType: brainstorm`. Its owner agent gets a `brainstorm` tool and runs fixed rounds with 3 to 5 other agents, so a brainstorm always ends:
+
+1. **Private ideas.** Every participant writes ideas at the same time, each as an in-turn helper that sees only the card's title, brief and done-when line, so no idea anchors another.
+2. **Cross-build.** Every participant sees all the private ideas and builds on the others'.
+3. **Devil's advocate.** One participant, `devilsAdvocate` or else the last one named, argues against the built ideas.
+4. **Converge.** The owner weighs the rounds and closes the card with `card.top`: exactly 3 `{idea, reason}`, best first, alongside the usual conclusion, evidence, next action and confidence. The saved result starts with the top 3.
+
+Each participant runs with its own agent's instructions, tools and required skills, plus its `cardSkills` for `brainstorm`. The owner can't take part in its own brainstorm, and the Router can't either. The rounds run once per card: a second `brainstorm` call is refused, and the card can't close with a top 3 until they have run. A brainstorm can't run twice at once. One stopped part way can be started again from a later turn, because nothing is saved until the third round ends. Its participants and rounds are kept in the `agent_brainstorms` table. Only a brainstorm card closes with `top`, and the card can still close with one question for the owner instead.
+
 ## Agent time
 
 Each card's agent time and waiting-on-owner time are worked out separately from its turns and turn events, against its estimate in agent minutes. Agent time is how long the card's turns, and the turns answering its asks, worked, up to the moment a turn stopped to wait for the owner. Waiting time runs from that moment, or from the moment the card closed with a question, until the next turn of the card starts, or until now while the owner hasn't answered. Time a card spends held by its blockers counts as neither.
 
-The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md`, `docs/adr/0002-cards-extend-tasks.md` and `docs/adr/0004-cards-link-through-tasks.md`.
+The code is in `src/server/agents/`. Each upstream file it hooks into is recorded in an ADR in `docs/adr/`.

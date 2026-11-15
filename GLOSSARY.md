@@ -77,7 +77,7 @@ A metric crossing a client's threshold, keyed so that it opens at most one card 
 _Avoid_: Alert, incident
 
 **Brainstorm**:
-A card type with fixed rounds: private ideas, cross-build, devil's advocate, then a top three.
+A card type whose owner runs fixed rounds with 3 to 5 other agents: private ideas written in parallel, a cross-build, one devil's advocate, then the owner converges to a top three with reasons.
 
 **Board**:
 The page that shows every open and recently closed card by client and team, with blocked and waiting-on-owner cards marked.
