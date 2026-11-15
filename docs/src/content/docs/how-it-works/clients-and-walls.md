@@ -49,7 +49,7 @@ A file with no frontmatter, an unknown or missing field, or a budget that isn't 
 
 ## Every card has one client
 
-The Router must start each card with `client` set to one of the client file names, taken from the owner's words. When the owner's words don't make the client clear, the Router asks which client before starting the card. A card started without a client, or with a name that has no client file, is refused with the reason and the list of clients. The client is saved on the card's `agent_cards` row.
+The Router must start each card with `client` set to one of the client file names, taken from the owner's words. When the owner's words don't make the client clear, the Router asks which client before starting the card. A card started without a client, or with a name that has no client file, is refused with the reason and the list of clients. The client is saved on the card's `agent_cards` row. A child card takes its parent's client, and naming a different one is refused. A card can be blocked only by cards of its own client.
 
 ## The wall
 
@@ -62,13 +62,15 @@ Every turn of a card's session runs behind its client's wall:
 - **Cards.** The task ledger in the card's context lists only cards for the same client, and `task list` is refused.
 - **Owner-wide tools.** `manage_apps`, `sign_in`, `browser_session`, `pay` and `files` reach the owner's accounts, saved logins, cards and computer across every client, so a card can't use them.
 
+An agent answering an ask on a card works behind that card's wall.
+
 A card whose client file is missing or invalid can use no connections and is told to close with one question asking the owner to fix the client file. Browser profiles per agent and client, which will let a card sign in again, come with real Chrome in a later change.
 
 The main chat, where the Router runs, is not behind a wall: it sees the owner's memory and every client, because it only routes work.
 
 ## Monthly client budget
 
-Each client's spend for the month is the sum of `model_usage` costs for the sessions of its cards, counted from the start of the month in the owner's time zone. Plan usage that has no API price is not counted, matching the owner's monthly limit.
+Each client's spend for the month is the sum of `model_usage` costs for the sessions of its cards and of the asks on them, counted from the start of the month in the owner's time zone. Plan usage that has no API price is not counted, matching the owner's monthly limit.
 
 When a client's spend reaches its `budget.monthlyUsd`, each new turn of its cards fails before the model with the reason: what the client has spent, its budget and how to raise it. The pause is saved in the `client_budget_pauses` table, one row per client and month with the latest spend, budget, reason and turn, for the morning digest to show. Other clients keep running. A reply the owner sends on a card still runs, so the owner can decide what happens next; raising `budget.monthlyUsd` takes effect on the next turn.
 

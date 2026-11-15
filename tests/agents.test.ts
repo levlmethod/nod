@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import type { Agent, AgentSessionOptions, AgentTool, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
+import { toolDefinitions } from '../src/runtime/tools.ts';
 import { bindAgent, createAgentBinding, loadAgentRegistry } from '../src/server/agents/registry.ts';
 import { wallCard } from '../src/server/agents/clients.ts';
 import { mcpNamespaces } from '../src/runtime/tools.ts';
@@ -153,7 +154,7 @@ test('without NOD_AGENTS_ROOT the main chat runs unbound, as upstream Nod does',
   const binding = createAgentBinding({
     knownTools: ['task'],
     namespaces,
-    card: async () => ({ agent: 'growth-analyst', client: 'rkmd' }),
+    card: async () => ({ agent: 'growth-analyst', client: 'rkmd', role: 'owner' as const }),
     wallRecords: async () => ({ sessionTurns: new Set(), clientCards: new Set() }),
     root: '',
   });
@@ -472,6 +473,18 @@ routing: Owns client growth metrics, traffic and conversion questions.
 `,
       'growth/growth-analyst.md': analyst,
       ...clientConfigs,
+      'creative/team.md': `---
+lead: copywriter
+routing: Writes ad and email copy.
+---
+`,
+      'creative/copywriter.md': `---
+title: Copywriter
+role: Writes copy in the client's voice.
+tools: [send_message]
+---
+Write copy in the client's brand voice.
+`,
     });
     const db = await import('../src/server/db.ts');
     const thread = await import('../src/server/thread.ts');
@@ -588,7 +601,11 @@ routing: Owns client growth metrics, traffic and conversion questions.
       assert.equal(row.card_type, 'investigation');
       assert.equal(row.estimate_minutes, 45);
       assert.equal(Number(row.budget_usd), 4);
-      assert.deepEqual(await cards.cardFor(task.id), { agent: 'growth-analyst', client: 'rkmd' });
+      assert.deepEqual(await cards.cardFor(task.id), {
+        agent: 'growth-analyst',
+        client: 'rkmd',
+        role: 'owner',
+      });
       const bound = bindAgent(
         registry,
         { threadId: turn.threadId, sessionId: task.id },
@@ -787,5 +804,353 @@ routing: Owns client growth metrics, traffic and conversion questions.
         );
       },
     );
+
+    const finishCard = (
+      work: { threadId: string; turnId: string },
+      id: string,
+      conclusion: string,
+    ) =>
+      tasks.execute(
+        work,
+        {
+          action: 'finish',
+          id,
+          status: 'done',
+          card: {
+            conclusion,
+            evidence: ['Synthetic report.'],
+            nextAction: 'None.',
+            confidence: 'high',
+          },
+        },
+        null,
+      );
+    const firstTurn = async (taskId: string) =>
+      (
+        await db.pool.query<{ id: string; prompt: string; held: boolean; status: string }>(
+          `SELECT id,prompt,status,start_after IS NOT NULL AND start_after>now() AS held
+           FROM turns WHERE session_id=$1 ORDER BY created_at,id LIMIT 1`,
+          [taskId],
+        )
+      ).rows[0]!;
+    const resumes = async (sessionId: string) =>
+      (
+        await db.pool.query<{ prompt: string }>(
+          "SELECT prompt FROM turns WHERE session_id=$1 AND source='resume' ORDER BY created_at,id",
+          [sessionId],
+        )
+      ).rows.map((row) => row.prompt);
+    const routerCard = async (text: string, fields: Record<string, unknown> = {}) => {
+      const { turn, messageId } = await ask(text);
+      const task = (await tasks.execute(
+        turn,
+        start({ agent: 'growth-analyst', client: 'rkmd', estimateMinutes: 30, ...fields }),
+        messageId,
+      )) as { id: string };
+      return { turn, task };
+    };
+
+    await t.test('a card agent splits its card into child cards for other agents', async () => {
+      const { task: parent } = await routerCard('Plan the Formulaic spring campaign.', {
+        client: 'formulaic',
+      });
+      const work = await cardTurn(parent.id);
+      await assert.rejects(
+        tasks.execute(work, start({ estimateMinutes: 10 }), null),
+        /already has a task/,
+      );
+      const child = (await tasks.execute(
+        work,
+        start({
+          title: 'Write three headlines',
+          brief: 'Three headlines for the spring sale in the Formulaic voice.',
+          agent: 'copywriter',
+          estimateMinutes: 15,
+        }),
+        null,
+      )) as { id: string };
+      assert.notEqual(child.id, parent.id);
+      const row = (await db.pool.query('SELECT * FROM agent_cards WHERE task_id=$1', [child.id]))
+        .rows[0];
+      assert.equal(row.parent_task_id, parent.id);
+      assert.equal(row.agent, 'copywriter');
+      assert.deepEqual(await cards.cardFor(child.id), {
+        agent: 'copywriter',
+        client: 'formulaic',
+        role: 'owner',
+      });
+      assert.equal((await cards.cardFor(parent.id))?.agent, 'growth-analyst');
+      await assert.rejects(
+        tasks.execute(
+          work,
+          start({ title: 'RKMD copy', agent: 'copywriter', client: 'rkmd', estimateMinutes: 5 }),
+          null,
+        ),
+        /stays with its parent's client, formulaic/,
+      );
+      const queued = await firstTurn(child.id);
+      assert.equal(queued.status, 'queued');
+      assert.equal(queued.held, false);
+      assert.match(queued.prompt, /Three headlines for the spring sale/);
+      const childWork = await cardTurn(child.id);
+      await finishCard(childWork, child.id, 'Headlines written.');
+      const resumed = await resumes(parent.id);
+      assert.equal(resumed.length, 1);
+      assert.match(resumed[0]!, /Write three headlines[\s\S]*Headlines written\./);
+    });
+
+    await t.test('a plain task session cannot start cards', async () => {
+      const work = await running(
+        await thread.enqueueTurn('Tidy my notes.', { source: 'task', sessionId: randomUUID() }),
+      );
+      await tasks.execute(work, start({}), null);
+      await assert.rejects(
+        tasks.execute(work, start({ agent: 'copywriter', estimateMinutes: 5 }), null),
+        /Only the Router or a card agent/,
+      );
+    });
+
+    await t.test('a blocked card does not run until its blockers close', async () => {
+      const { task: first } = await routerCard('Pull the RKMD Taboola numbers.');
+      const unknown = await ask('Write it after an unknown card.');
+      await assert.rejects(
+        tasks.execute(
+          unknown.turn,
+          start({
+            agent: 'copywriter',
+            client: 'rkmd',
+            estimateMinutes: 10,
+            blockedBy: [randomUUID()],
+          }),
+          unknown.messageId,
+        ),
+        /not a rkmd card/,
+      );
+      await assert.rejects(
+        tasks.execute(
+          unknown.turn,
+          start({
+            agent: 'copywriter',
+            client: 'formulaic',
+            estimateMinutes: 10,
+            blockedBy: [first.id],
+          }),
+          unknown.messageId,
+        ),
+        /not a formulaic card/,
+      );
+      const { turn: chat, messageId } = await ask('Write the RKMD weekly summary after that.');
+      const second = (await tasks.execute(
+        chat,
+        start({ agent: 'copywriter', client: 'rkmd', estimateMinutes: 10, blockedBy: [first.id] }),
+        messageId,
+      )) as { id: string };
+      assert.equal((await firstTurn(second.id)).held, true);
+      const work = await cardTurn(first.id);
+      await tasks.execute(
+        work,
+        { action: 'finish', id: first.id, status: 'done', question: 'Which week should I pull?' },
+        null,
+      );
+      assert.equal((await firstTurn(second.id)).held, true);
+      await db.pool.query("UPDATE turns SET status='succeeded',finished_at=now() WHERE id=$1", [
+        work.turnId,
+      ]);
+      const answered = await running(
+        await thread.enqueueTurn('Last week.', {
+          source: 'task',
+          sessionId: first.id,
+          background: true,
+        }),
+      );
+      await db.pool.query("UPDATE tasks SET state='open',closed_at=NULL WHERE id=$1", [first.id]);
+      await tasks.inherit(answered);
+      await finishCard(answered, first.id, 'Taboola CPC rose 12%.');
+      const released = await firstTurn(second.id);
+      assert.equal(released.held, false);
+      assert.match(released.prompt, /Taboola CPC rose 12%\./);
+      const { task: third } = await routerCard('Check the RKMD GA4 goals.');
+      const { turn: chat2, messageId: message2 } = await ask('Summarize the goals after that.');
+      const fourth = (await tasks.execute(
+        chat2,
+        start({ agent: 'copywriter', client: 'rkmd', estimateMinutes: 10, blockedBy: [third.id] }),
+        message2,
+      )) as { id: string };
+      assert.equal((await firstTurn(fourth.id)).held, true);
+      const { turn: stopper, messageId: stopMessage } = await ask('Stop the GA4 goals card.');
+      await tasks.execute(stopper, { action: 'stop', id: third.id }, stopMessage);
+      assert.equal((await firstTurn(fourth.id)).held, false);
+    });
+
+    await t.test(
+      'an ask allows 3 back-and-forths, then the 4th is refused and flagged',
+      async () => {
+        const { task } = await routerCard('Find why Formulaic refunds rose.', {
+          client: 'formulaic',
+        });
+        const work = await cardTurn(task.id);
+        await assert.rejects(
+          cards.act(work, { action: 'ask', id: task.id, agent: 'growth-analyst', question: 'Me?' }),
+          /another agent/,
+        );
+        for (let round = 1; round <= 3; round++) {
+          const asked = (await cards.act(work, {
+            action: 'ask',
+            id: task.id,
+            agent: 'copywriter',
+            question: `Did the refund email copy change, round ${round}?`,
+          })) as { ask: string };
+          await assert.rejects(
+            cards.act(work, {
+              action: 'ask',
+              id: task.id,
+              agent: 'copywriter',
+              question: 'Again?',
+            }),
+            /waiting for/,
+          );
+          const answering = await running(
+            (
+              await db.pool.query<{ id: string }>(
+                "SELECT id FROM turns WHERE session_id=$1 AND status='queued' ORDER BY created_at LIMIT 1",
+                [asked.ask],
+              )
+            ).rows[0]!.id,
+          );
+          assert.deepEqual(await cards.cardFor(asked.ask), {
+            agent: 'copywriter',
+            client: 'formulaic',
+            role: 'asked',
+          });
+          const binding = createAgentBinding({
+            knownTools: Object.keys(toolDefinitions),
+            namespaces,
+            card: cards.cardFor,
+            wallRecords: cards.wallRecords,
+            root,
+          });
+          const bound = (await binding.bind({ threadId: answering.threadId, sessionId: asked.ask }))
+            .agent;
+          assert.equal(bound?.name, 'copywriter');
+          assert.equal(bound?.wall?.client, 'formulaic');
+          assert.match(bound?.instructions ?? '', /brand voice[\s\S]*task answer/);
+          assert.doesNotMatch(bound?.instructions ?? '', /You own this card/);
+          await assert.rejects(
+            cards.act(answering, start({ agent: 'copywriter', estimateMinutes: 5 })),
+            /answer/,
+          );
+          await cards.act(answering, {
+            action: 'answer',
+            id: asked.ask,
+            answer: `No change in round ${round}.`,
+          });
+          await assert.rejects(
+            cards.act(answering, { action: 'answer', id: asked.ask, answer: 'Twice.' }),
+            /no question/,
+          );
+          assert.match(
+            (await resumes(task.id)).at(-1)!,
+            new RegExp(`No change in round ${round}\\.`),
+          );
+        }
+        await assert.rejects(
+          cards.act(work, {
+            action: 'ask',
+            id: task.id,
+            agent: 'copywriter',
+            question: 'Once more?',
+          }),
+          /3 back-and-forths/,
+        );
+        assert.ok((await cards.read([task.id]))[0]?.asks[0]?.flagged);
+        await db.pool.query(
+          `UPDATE agent_card_asks SET exchanges='[{"question":"Stuck?"}]',flagged_at=NULL WHERE task_id=$1`,
+          [task.id],
+        );
+        await db.pool.query(
+          "UPDATE turns SET status='failed' WHERE session_id=(SELECT id FROM agent_card_asks WHERE task_id=$1) AND status IN ('queued','running')",
+          [task.id],
+        );
+        const retried = (await cards.act(work, {
+          action: 'ask',
+          id: task.id,
+          agent: 'copywriter',
+          question: 'Did anything change after all?',
+        })) as { exchange: number };
+        assert.equal(retried.exchange, 2);
+        const [card] = await cards.read([task.id]);
+        assert.equal(card?.asks.length, 1);
+        assert.equal(card?.asks[0]?.exchanges, 2);
+        assert.ok(card?.asks[0]?.flagged);
+        const { createClientBudget } = await import('../src/server/agents/client-budget.ts');
+        const budget = createClientBudget({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+        });
+        const before = (await budget.spend()).find((row) => row.client === 'formulaic')!.spentUsd;
+        await db.pool.query(
+          `INSERT INTO model_usage(id,owner_id,turn_id,session_id,cost_usd)
+           SELECT $1,$2,NULL,id,7 FROM agent_card_asks WHERE task_id=$3`,
+          [randomUUID(), ownerId, task.id],
+        );
+        assert.equal(
+          (await budget.spend()).find((row) => row.client === 'formulaic')!.spentUsd,
+          before + 7,
+        );
+      },
+    );
+
+    await t.test('agent time and waiting-on-owner time are recorded separately', async () => {
+      const { task } = await routerCard('Audit the Krowdit Stripe churn.', { estimateMinutes: 40 });
+      const first = await cardTurn(task.id);
+      await db.pool.query(
+        `UPDATE turns SET created_at=now()-interval '30 minutes',started_at=now()-interval '30 minutes',
+         finished_at=now()-interval '5 minutes',status='cancelled',waiting_reason='question' WHERE id=$1`,
+        [first.turnId],
+      );
+      await db.pool.query(
+        `INSERT INTO turn_events(id,turn_id,type,summary,created_at)
+         VALUES(gen_random_uuid(),$1,'waiting','Waiting for your input.',now()-interval '20 minutes')`,
+        [first.turnId],
+      );
+      const reply = await thread.enqueueTurn('Yes, include annual plans.', {
+        source: 'task',
+        sessionId: task.id,
+        background: true,
+      });
+      await db.pool.query(
+        `UPDATE turns SET created_at=now()-interval '5 minutes',started_at=now()-interval '5 minutes',
+         finished_at=now()-interval '2 minutes',status='succeeded' WHERE id=$1`,
+        [reply],
+      );
+      const [card] = await cards.read([task.id]);
+      assert.equal(card?.estimateMinutes, 40);
+      assert.equal(Math.round(card!.agentMinutes), 13);
+      assert.equal(Math.round(card!.waitingMinutes), 15);
+      const last = await running(
+        await thread.enqueueTurn('Check trials too.', {
+          source: 'task',
+          sessionId: task.id,
+          background: true,
+        }),
+      );
+      await tasks.inherit(last);
+      await tasks.execute(
+        last,
+        { action: 'finish', id: task.id, status: 'done', question: 'Should churn include trials?' },
+        null,
+      );
+      await db.pool.query("UPDATE turns SET started_at=now()-interval '2 minutes' WHERE id=$1", [
+        last.turnId,
+      ]);
+      await db.pool.query(
+        `UPDATE turn_events SET created_at=now()-interval '1 minute' WHERE turn_id=$1 AND type='card_question'`,
+        [last.turnId],
+      );
+      const [asking] = await cards.read([task.id]);
+      assert.equal(Math.round(asking!.agentMinutes), 14);
+      assert.equal(Math.round(asking!.waitingMinutes), 16);
+    });
   },
 );

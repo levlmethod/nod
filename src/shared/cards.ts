@@ -1,6 +1,10 @@
 import { Type } from '@sinclair/typebox';
 import { z } from 'zod';
 
+const uuid = Type.String({
+  pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+});
+
 export const cardConfidence = ['low', 'medium', 'high'] as const;
 
 export type CardResult =
@@ -17,6 +21,7 @@ export const cardStartFields = {
   client: z.string().trim().min(1).optional(),
   cardType: z.string().trim().min(1).max(60).optional(),
   estimateMinutes: z.number().int().positive().max(10_000).optional(),
+  blockedBy: z.array(z.uuid()).max(20).optional(),
 };
 
 export const cardFinishFields = {
@@ -29,6 +34,55 @@ export const cardStartParams = {
   client: Type.Optional(Type.String({ minLength: 1 })),
   cardType: Type.Optional(Type.String({ minLength: 1, maxLength: 60 })),
   estimateMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
+  blockedBy: Type.Optional(Type.Array(uuid, { maxItems: 20 })),
+};
+
+export const askLimit = 3;
+
+export const cardAsk = z
+  .object({
+    action: z.literal('ask'),
+    id: z.uuid(),
+    agent: z.string().trim().min(1),
+    question: z.string().trim().min(1).max(4000),
+  })
+  .strict();
+
+export const cardAnswer = z
+  .object({ action: z.literal('answer'), id: z.uuid(), answer: z.string().trim().min(1).max(4000) })
+  .strict();
+
+export const cardActionParams = [
+  Type.Object(
+    {
+      action: Type.Literal('ask'),
+      id: uuid,
+      agent: Type.String({ minLength: 1 }),
+      question: Type.String({ minLength: 1, maxLength: 4000 }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      action: Type.Literal('answer'),
+      id: uuid,
+      answer: Type.String({ minLength: 1, maxLength: 4000 }),
+    },
+    { additionalProperties: false },
+  ),
+] as const;
+
+export type CardView = {
+  taskId: string;
+  agent: string;
+  cardType: string;
+  parentTaskId: string | null;
+  blockedBy: string[];
+  openBlockers: string[];
+  estimateMinutes: number;
+  agentMinutes: number;
+  waitingMinutes: number;
+  asks: { id: string; agent: string; exchanges: number; pending: boolean; flagged: boolean }[];
 };
 
 export const cardFinishParams = {

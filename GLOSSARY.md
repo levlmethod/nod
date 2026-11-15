@@ -56,6 +56,14 @@ _Avoid_: Ticket, job, issue
 How a card closes: a conclusion, its evidence, the next action and a confidence.
 _Avoid_: Summary, output
 
+**Child card**:
+A card an agent starts from its own card to hand part of the work to another agent. The parent resumes once every child has closed.
+_Avoid_: Subtask, subcard
+
+**Blocker**:
+A card another card waits on. A blocked card doesn't start until all its blockers close.
+_Avoid_: Dependency, prerequisite
+
 **Ask**:
 One question an agent puts to another agent on a card, capped at three back-and-forths.
 _Avoid_: Chat, discussion, thread

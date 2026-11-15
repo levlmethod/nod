@@ -1,6 +1,6 @@
 ---
 title: Agents and teams
-description: How the marketing fork defines agents and teams as config files, how the main chat runs as a Router that can only route work, and how cards run as their owner agent.
+description: How the marketing fork defines agents and teams as config files, how the main chat runs as a Router that can only route work, how cards run as their owner agent, and how cards split, block and ask each other.
 sidebar:
   order: 8
 ---
@@ -81,4 +81,16 @@ A card closes only through `task finish`, with one of:
 
 Any other finish is refused with the missing parts named, and a final reply alone doesn't close a card. The card's saved result is the conclusion, evidence, next action and confidence as text, or the question. When `NOD_AGENTS_ROOT` isn't set, there are no cards: the chat starts plain tasks as upstream Nod does, and a task that names an agent is refused. Schedules, background work and tasks Nod starts on its own don't run as an agent yet.
 
-The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md` and `docs/adr/0002-cards-extend-tasks.md`.
+## Child cards, blockers and asks
+
+Cards can depend on and talk to each other without anyone sharing work.
+
+- **Child cards.** An agent working a card can split it with `task start` naming another `agent` and `estimateMinutes`. The child is its own card with its own session and owner agent, and records its parent. Once every child card has closed, the parent card's session is resumed with each child's title, owner, state and result.
+- **Blockers.** A card started with `blockedBy`, a list of card IDs, waits until all of them settle: done with a conclusion, or stopped. A blocker that closes with a question for the owner still holds its dependents until the owner's reply reopens it and it closes with a conclusion. The blocked card's first turn is held in the queue until then, and when it starts its request includes each blocker's result. Only existing cards can block, so blockers can't form a loop. Child cards settle the same way before their parent is resumed.
+- **Asks.** An agent can ask another agent a question about its card with `task ask {id, agent, question}`. The asked agent answers in its own session, with its own tools and instructions, through `task answer {id, answer}`, and can't start, change or close cards from there. The asking card is resumed with the answer. Each card allows one ask per agent and 3 back-and-forths on it; the 4th question is refused and the ask is flagged for the PM. If the asked agent's turn ends without answering, the next question to that agent records the earlier one as unanswered, counts it toward the 3 and flags the ask.
+
+## Agent time
+
+Each card's agent time and waiting-on-owner time are worked out separately from its turns and turn events, against its estimate in agent minutes. Agent time is how long the card's turns, and the turns answering its asks, worked, up to the moment a turn stopped to wait for the owner. Waiting time runs from that moment, or from the moment the card closed with a question, until the next turn of the card starts, or until now while the owner hasn't answered. Time a card spends held by its blockers counts as neither.
+
+The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md`, `docs/adr/0002-cards-extend-tasks.md` and `docs/adr/0004-cards-link-through-tasks.md`.

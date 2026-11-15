@@ -2187,6 +2187,8 @@ async function initializeApplication(
       },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
+        const handled = await cards.act(turn, raw);
+        if (handled !== undefined) return handled;
         const request = raw as { action?: unknown; model?: unknown } | undefined;
         if (request?.action === 'start' && request.model) {
           const current = (

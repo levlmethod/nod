@@ -35,8 +35,11 @@ export function createClientBudget(options: {
     const { rows } = await pool.query<{ client: string; spent: number }>(
       `SELECT c.client,COALESCE(sum(m.cost_usd::text::numeric),0)::float8 AS spent
        FROM model_usage m LEFT JOIN turns u ON u.id=m.turn_id AND u.owner_id=m.owner_id
-       JOIN tasks t ON t.owner_id=m.owner_id AND t.session_id=COALESCE(m.session_id,u.session_id)
-       JOIN agent_cards c ON c.task_id=t.id AND c.owner_id=t.owner_id
+       JOIN (SELECT t.session_id,c.client FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
+             WHERE c.owner_id=$1
+             UNION ALL
+             SELECT a.id,c.client FROM agent_card_asks a JOIN agent_cards c ON c.task_id=a.task_id AND c.owner_id=a.owner_id
+             WHERE a.owner_id=$1) c ON c.session_id=COALESCE(m.session_id,u.session_id)
        WHERE m.owner_id=$1 AND c.client IS NOT NULL AND m.created_at>=${monthStart}
        GROUP BY c.client`,
       [ownerId],
