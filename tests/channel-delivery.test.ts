@@ -1453,6 +1453,32 @@ test(
 );
 
 test(
+  'a message the owner asked to hold is never delivered to a chat app, while the rest are',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async (t) => {
+    const { posts, receive, turnOf, reply, create } = await outboxFixture(t);
+    const held = randomUUID();
+    const channels = await create({ heldMessages: async () => [held] });
+    try {
+      receive('111', 'held-request', 'held-chat');
+      await channels.drain();
+      const { turn_id: turnId } = await turnOf('held-request');
+      await reply(turnId, 'Can I send the synthetic report to the client?', held, 0);
+      await reply(turnId, 'The synthetic numbers are ready.', randomUUID(), 1);
+      await channels.drain();
+      await until(() => posts.length === 1);
+      await channels.drain();
+      assert.deepEqual(
+        posts.map(({ text }) => text),
+        ['The synthetic numbers are ready.'],
+      );
+    } finally {
+      await channels.close();
+    }
+  },
+);
+
+test(
   'channel answer choices preserve the question and option meaning without changing stored text',
   { skip: !process.env.TEST_DATABASE_URL },
   async (t) => {

@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { answerChoiceInputSchema, answerChoicesSchema } from '../shared/answer-choices.ts';
 import { presentationInputSchema, type Presentation } from '../shared/presentation.ts';
 import { cardFinishParams, cardStartParams } from '../shared/cards.ts';
+import { approvalNoteParams } from '../shared/tiers.ts';
 import { proactiveUpdateSchema, sourceReadSchema } from '../shared/proactivity.ts';
 import { Value } from '@sinclair/typebox/value';
 import {
@@ -647,6 +648,7 @@ export const toolDefinitions = {
           stepIndex: Type.Optional(Type.Integer({ minimum: 0 })),
           waitingFor: Type.Optional(taskWaits),
           nextCheck: Type.Optional(taskNextCheck),
+          ...approvalNoteParams,
         },
         { additionalProperties: false },
       ),

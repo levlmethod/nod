@@ -31,6 +31,7 @@ import { waitingTurnSql, withdrawnSql, workKindSql, workOriginSql } from './turn
 import { resemblesTaskAcknowledgement } from '../shared/task-ack.ts';
 import { cardFinishFields, cardStartFields } from '../shared/cards.ts';
 import type { CardHooks } from './agents/cards.ts';
+import { approvalNoteFields, type ApprovalNote } from '../shared/tiers.ts';
 
 const now = z.string().trim().min(1);
 const waits = z.array(
@@ -67,6 +68,7 @@ const input = z.discriminatedUnion('action', [
       stepIndex: z.number().int().nonnegative().optional(),
       waitingFor: waits.optional(),
       nextCheck: nextCheck.optional(),
+      ...approvalNoteFields,
     })
     .strict(),
   z
@@ -151,6 +153,7 @@ export function createTasks(options: {
   clearBrowser?: (id: string) => Promise<void>;
   validateModel?: (choice: ModelSelection) => ModelSelection;
   cards?: CardHooks;
+  approvalNote?: (client: PoolClient, taskId: string, note: ApprovalNote) => Promise<void>;
 }) {
   const { pool, ownerId } = options;
   const refresh = options.refresh ?? (() => {});
@@ -593,6 +596,10 @@ export function createTasks(options: {
             : request.result
           : undefined;
       if (request.action === 'finish' && !result) throw failure('Finishing a task needs result.');
+      if (request.action === 'update' && request.approval) {
+        if (!options.approvalNote) throw failure('Approval notes are only for cards.');
+        await options.approvalNote(client, id, request.approval);
+      }
       const updated =
         request.action === 'update'
           ? await client.query(

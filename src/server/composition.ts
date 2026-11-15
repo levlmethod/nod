@@ -130,6 +130,7 @@ import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createClientBudget } from './agents/client-budget.ts';
+import { createTierQueue, tierInstructions } from './agents/tier-queue.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -895,6 +896,7 @@ async function initializeApplication(
     wallRecords: cards.wallRecords,
   });
   const clientBudget = createClientBudget({ pool, ownerId, registry: () => agents.registry() });
+  const tierQueue = createTierQueue({ pool, ownerId, registry: () => agents.registry() });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -1130,6 +1132,7 @@ async function initializeApplication(
     pool,
     ownerId,
     cards: cards.hooks,
+    approvalNote: tierQueue.note,
     analytics: captureAnalytics,
     refresh,
     clearBrowser: (id) => adapters.computer.clear(id),
@@ -1140,6 +1143,7 @@ async function initializeApplication(
   await tasks.initialize();
   await cards.initialize();
   await clientBudget.initialize();
+  await tierQueue.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -1697,6 +1701,7 @@ async function initializeApplication(
     (reply) => ledger.forOwner(() => trust.answer(reply)),
     communication.describe,
     captureAnalytics,
+    tierQueue.asked,
   );
   retireScheduleConfirmations = approvals.retireScheduleConfirmations;
   let channels: Awaited<ReturnType<typeof createChannels>> | undefined;
@@ -1960,6 +1965,7 @@ async function initializeApplication(
     ...(adapters.trustModel === 'decision' && adapters.trustDecisions
       ? { decisions: ledger.decisions(adapters.trustDecisions) }
       : {}),
+    tiers: tierQueue.trust,
   });
   const observations = createObservationSources(
     [
@@ -2153,6 +2159,7 @@ async function initializeApplication(
               ).rowCount,
             ));
         const agentBinding = await agents.bind(context);
+        if (agentBinding.agent?.wall) agentBinding.agent.instructions += `\n\n${tierInstructions}`;
         await clientBudget.admit(context, agentBinding.agent?.wall?.client);
         const run = () =>
           ledger.withTurn(
@@ -2767,6 +2774,7 @@ async function initializeApplication(
     }
   };
   const app = await createApp({
+    heldMessages: tierQueue.held,
     failureLog: diagnostics.failure,
     analytics: captureAnalytics,
     admission,
@@ -2925,6 +2933,7 @@ async function initializeApplication(
       ? setup.create(await channelSettings!.environment())
       : adapters.messaging!;
     channels = await createChannels(pool, {
+      heldMessages: () => tierQueue.held(),
       admission,
       ownerId,
       present: communication.present,

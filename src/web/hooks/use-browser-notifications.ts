@@ -59,7 +59,12 @@ export function useBrowserNotifications(ownerId: string, state: AppState | null)
     if (!state || desktopSettingsAvailable()) return;
     let newest;
     for (const message of state.messages) {
-      if (scope.initialized && !scope.seen.has(message.id) && message.role === 'assistant')
+      if (
+        scope.initialized &&
+        !scope.seen.has(message.id) &&
+        message.role === 'assistant' &&
+        !message.held
+      )
         newest = message;
       scope.seen.add(message.id);
     }

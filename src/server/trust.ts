@@ -49,6 +49,11 @@ export function createTrust(options: {
   ownerId: string;
   review: ModelReview;
   decisions?: DecisionModel;
+  tiers?: (
+    turn: TurnRef,
+    action: string,
+    args: Record<string, unknown>,
+  ) => Promise<{ rules: string; ask?: string } | undefined>;
 }) {
   const { pool, ownerId } = options;
   const review = createTrustReview(options);
@@ -91,7 +96,9 @@ export function createTrust(options: {
       ).rows[0];
       const standing =
         origin.source === 'event' ? preferences?.notification_rule.trim() : undefined;
-      const rules = preferences?.rules.trim();
+      const ownerRules = preferences?.rules.trim();
+      const tier = await options.tiers?.(turn, action, args);
+      const rules = [ownerRules, tier?.rules].filter(Boolean).join('\n\n');
       const said =
         origin.source === 'user'
           ? await captureOwnerInstructions(
@@ -135,6 +142,8 @@ export function createTrust(options: {
           : undefined;
       return {
         words,
+        ownerRules,
+        tierAsk: tier?.ask,
         ...(task ? { task: { id: origin.taskId!, revision: task.revision } } : {}),
         evidence: said?.evidence,
         confirmationReply: said?.confirmationReply,
@@ -173,7 +182,7 @@ export function createTrust(options: {
             ...(captured.chatRevision
               ? { chat: { threadId: turn.threadId, id: captured.chatRevision } }
               : {}),
-            rules: captured.words.userRules ?? '',
+            rules: captured.ownerRules ?? '',
           }),
         }
       : {};
@@ -242,11 +251,13 @@ export function createTrust(options: {
     let failed = false;
     const answer = replacementNeedsApproval
       ? { run: false }
-      : await review(instructions, input, signal).catch((error: unknown) => {
-          failed = true;
-          logFailure('trust_check_failed', error);
-          return undefined;
-        });
+      : captured.tierAsk
+        ? { run: false, rule: true }
+        : await review(instructions, input, signal).catch((error: unknown) => {
+            failed = true;
+            logFailure('trust_check_failed', error);
+            return undefined;
+          });
     signal?.throwIfAborted();
     unchanged();
     const reviewedBasis = trustBasis(answer, {
