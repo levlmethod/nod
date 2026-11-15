@@ -1,0 +1,23 @@
+name: Require ticket
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  ticket:
+    if: github.repository == 'levlmethod/nod'
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR body links an issue
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if printf '%s' "$HEAD" | grep -qE '^(upstream-sync|chore/typo)'; then exit 0; fi
+          if printf '%s' "$BODY" | grep -qiE '(closes|fixes|resolves|refs) #[0-9]+'; then exit 0; fi
+          echo "This PR does not link a ticket. Add 'Closes #<issue>' to the body (see CLAUDE.md, step 1)."
+          exit 1
