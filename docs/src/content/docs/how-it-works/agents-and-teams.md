@@ -95,8 +95,19 @@ Cards can depend on and talk to each other without anyone sharing work.
 - **Blockers.** A card started with `blockedBy`, a list of card IDs, waits until all of them settle: done with a conclusion, or stopped. A blocker that closes with a question for the owner still holds its dependents until the owner's reply reopens it and it closes with a conclusion. The blocked card's first turn is held in the queue until then, and when it starts its request includes each blocker's result. Only existing cards can block, so blockers can't form a loop. Child cards settle the same way before their parent is resumed.
 - **Asks.** An agent can ask another agent a question about its card with `task ask {id, agent, question}`. The asked agent answers in its own session, with its own tools and instructions, through `task answer {id, answer}`, and can't start, change or close cards from there. The asking card is resumed with the answer. Each card allows one ask per agent and 3 back-and-forths on it; the 4th question is refused and the ask is flagged for the PM. If the asked agent's turn ends without answering, the next question to that agent records the earlier one as unanswered, counts it toward the 3 and flags the ask.
 
+## Brainstorms
+
+A brainstorm is a card with `cardType: brainstorm`. Its owner agent gets a `brainstorm` tool and runs fixed rounds with 3 to 5 other agents, so a brainstorm always ends:
+
+1. **Private ideas.** Every participant writes ideas at the same time, each as an in-turn helper that sees only the card's title, brief and done-when line, so no idea anchors another.
+2. **Cross-build.** Every participant sees all the private ideas and builds on the others'.
+3. **Devil's advocate.** One participant, `devilsAdvocate` or else the last one named, argues against the built ideas.
+4. **Converge.** The owner weighs the rounds and closes the card with `card.top`: exactly 3 `{idea, reason}`, best first, alongside the usual conclusion, evidence, next action and confidence. The saved result starts with the top 3.
+
+Each participant runs with its own agent's instructions, tools and required skills, plus its `cardSkills` for `brainstorm`. The owner can't take part in its own brainstorm, and the Router can't either. The rounds run once per card: a second `brainstorm` call is refused, and the card can't close with a top 3 until they have run. A brainstorm stopped part way can be started again, because nothing is saved until the third round ends. Its participants and rounds are kept in the `agent_brainstorms` table. Only a brainstorm card closes with `top`, and the card can still close with one question for the owner instead.
+
 ## Agent time
 
 Each card's agent time and waiting-on-owner time are worked out separately from its turns and turn events, against its estimate in agent minutes. Agent time is how long the card's turns, and the turns answering its asks, worked, up to the moment a turn stopped to wait for the owner. Waiting time runs from that moment, or from the moment the card closed with a question, until the next turn of the card starts, or until now while the owner hasn't answered. Time a card spends held by its blockers counts as neither.
 
-The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md`, `docs/adr/0002-cards-extend-tasks.md`, `docs/adr/0003-cards-link-through-tasks.md` and `docs/adr/0004-required-skills-load-into-agent-instructions.md`.
+The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md`, `docs/adr/0002-cards-extend-tasks.md`, `docs/adr/0003-cards-link-through-tasks.md` `docs/adr/0004-required-skills-load-into-agent-instructions.md` and `docs/adr/0005-brainstorms-run-as-helpers.md`.

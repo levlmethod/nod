@@ -40,6 +40,7 @@ import { repeatsTaskStart } from '../shared/task-ack.ts';
 import { currentUserTime, localResultTimes } from './time-context.ts';
 import { connectedTools, mcpNamespaces, nodTools } from './tools.ts';
 import type { ReplyDelivery, Turn } from './turn.ts';
+import { brainstormOutcome, runBrainstorm } from './brainstorm.ts';
 import type { ExecutionScope, WorkspaceCommandRecord } from '../shared/execution.ts';
 import type { MemoryBrief } from '../ports/memory-recall.ts';
 import { delimit } from './untrusted.ts';
@@ -419,15 +420,19 @@ export function createAgentRuntime(dependencies: {
       name: string,
       params: unknown,
       execute: () => Promise<unknown>,
-      { nested = false, execution: source = execution } = {},
+      {
+        nested = false,
+        execution: source = execution,
+        agent = context.agent,
+      }: { nested?: boolean; execution?: ExecutionScope; agent?: RuntimeContext['agent'] } = {},
     ): Promise<AgentToolResult> => {
       const label = name.replaceAll('_', ' ');
       const pending = (async () => {
         assertActive();
         const revision = requestRevision;
-        if (context.agent && !context.agent.tools.includes(name))
+        if (agent && !agent.tools.includes(name))
           throw new Error(
-            `The ${context.agent.title} agent can't use ${name}. Start a task for the agent that owns this work.`,
+            `The ${agent.title} agent can't use ${name}. Start a task for the agent that owns this work.`,
           );
         if (context.proactivity) {
           const safe =
@@ -726,7 +731,7 @@ export function createAgentRuntime(dependencies: {
           ...nodTools(turn, skills, dependencies.documentation),
           ...(context.proactivity ? [] : connectedTools(turn)),
         ]
-          .filter((tool) => !context.agent || context.agent.tools.includes(tool.name))
+          .filter((tool) => !turn.context.agent || turn.context.agent.tools.includes(tool.name))
           .filter(
             (tool) =>
               !context.proactivity ||
@@ -803,7 +808,11 @@ export function createAgentRuntime(dependencies: {
                       }
                       return execute(params);
                     },
-                    { execution: turn.execution, nested: Boolean(options?.nested) },
+                    {
+                      execution: turn.execution,
+                      nested: Boolean(options?.nested),
+                      agent: turn.context.agent,
+                    },
                   );
                 return admitted
                   ? admissions.run(admitted.gate, run).finally(admitted.settle)
@@ -811,20 +820,27 @@ export function createAgentRuntime(dependencies: {
               },
             };
           });
-      const agentPrompt = context.agent
-        ? `\nYou are the ${context.agent.title} agent. Your only tools are ${context.agent.tools.join(', ')}.\n${context.agent.instructions}`
-        : '';
-      const system =
-        context.proactivity?.instructions ??
-        systemPrompt(workspace, dependencies.skills, context.taskContext, context.background) +
-          agentPrompt;
-      const compactInstructions = {
-        systemPrompt: context.proactivity
-          ? system
-          : compactSystemPrompt(workspace, skills, context.taskContext, context.background) +
-            agentPrompt,
-        ownerContext: compactOwnerContext(context),
+      const agentPrompt = (agent = context.agent) =>
+        agent
+          ? `\nYou are the ${agent.title} agent. Your only tools are ${agent.tools.join(', ')}.\n${agent.instructions}`
+          : '';
+      const prompts = (agent = context.agent) => {
+        const system =
+          context.proactivity?.instructions ??
+          systemPrompt(workspace, dependencies.skills, context.taskContext, context.background) +
+            agentPrompt(agent);
+        return {
+          system,
+          compactInstructions: {
+            systemPrompt: context.proactivity
+              ? system
+              : compactSystemPrompt(workspace, skills, context.taskContext, context.background) +
+                agentPrompt(agent),
+            ownerContext: compactOwnerContext(context),
+          },
+        };
       };
+      const { system, compactInstructions } = prompts();
       const shared = {
         context: {
           ...context,
@@ -872,8 +888,13 @@ export function createAgentRuntime(dependencies: {
           if (host) sites.set(browserId, host);
         },
       };
-      const delegate = async (title: string, instruction: string) => {
+      const delegate = async (
+        title: string,
+        instruction: string,
+        helper: RuntimeContext['agent'] = context.agent,
+      ) => {
         assertActive();
+        const helperPrompts = prompts(helper);
         const runId = randomUUID();
         const childBrowser = runId;
         const source: ExecutionScope = {
@@ -900,16 +921,19 @@ export function createAgentRuntime(dependencies: {
             ...(context.model ? { model: context.model } : {}),
             automatic: Boolean(context.automatic),
             ephemeral: true,
-            systemPrompt: system,
+            systemPrompt: helperPrompts.system,
             ownerContext: ownerContext(context),
-            compactInstructions,
-            tools: bind({ ...shared, execution: source }, async () => {
-              browsed = true;
-            }).filter((tool) => !parentTools.has(tool.name)),
+            compactInstructions: helperPrompts.compactInstructions,
+            tools: bind(
+              { ...shared, context: { ...shared.context, agent: helper }, execution: source },
+              async () => {
+                browsed = true;
+              },
+            ).filter((tool) => !parentTools.has(tool.name)),
             workspace: { ...workspace, path: childPath },
             timeZone: context.timeZone,
             runTool: (name, params, run, options) =>
-              guard(name, params, run, { ...options, execution: source }),
+              guard(name, params, run, { ...options, execution: source, agent: helper }),
             shouldStop: (results) => stopped || overBudget() || childProgress.stopped(results),
             onEvent: (event) => {
               countUsage(event);
@@ -959,6 +983,19 @@ export function createAgentRuntime(dependencies: {
           ...shared,
           execution,
           delegate,
+          ...(context.brainstorm
+            ? {
+                brainstorm: async (input: { participants: string[]; devilsAdvocate?: string }) => {
+                  const plan = await context.brainstorm!.begin(input);
+                  assertActive();
+                  const rounds = await runBrainstorm(plan, (agent, title, instruction) =>
+                    delegate(title, instruction, agent),
+                  );
+                  await context.brainstorm!.save(rounds);
+                  return brainstormOutcome(plan, rounds);
+                },
+              }
+            : {}),
           ...(speaks
             ? {
                 setStatus: async (text: string) => {

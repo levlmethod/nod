@@ -4,6 +4,8 @@ import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { parse } from 'yaml';
 import type { RuntimeContext } from '../../ports/agent.ts';
+import type { BrainstormParticipant } from '../../ports/brainstorm.ts';
+import { brainstormCard, brainstormTop } from '../../shared/cards.ts';
 import {
   loadAgentSkills,
   rejectMissingSkills,
@@ -161,6 +163,11 @@ const cardRules =
 const askRules =
   "Another agent asked you a question on their card. The card stays theirs: answer only what was asked, using your tools if you need to check something, and reply with task answer {id, answer}. Don't start, change or close cards from here.";
 
+const brainstormRules = `This is a brainstorm card. Its rounds are fixed: call brainstorm {participants: 3 to 5 other agents, devilsAdvocate?} once to run private ideas, a cross-build and one devil's advocate, then converge yourself to a top 3 and close the card with card.top set to exactly ${brainstormTop} {idea, reason}, best first.`;
+
+const participantRules =
+  "You're taking part in a brainstorm on another agent's card. Answer only the round you're given, from your own role, and keep to what the round asks. You can't start, change or close cards.";
+
 export function cardOwners(registry: AgentRegistry) {
   return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
 }
@@ -177,7 +184,7 @@ function roster(registry: AgentRegistry) {
         : '';
     })
     .filter(Boolean);
-  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead.\n${teams.join('\n')}`;
+  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead. When the owner asks for a brainstorm, start a card with cardType ${brainstormCard} owned by the agent who should converge, and name in the brief any agents the owner wants in it.\n${teams.join('\n')}`;
 }
 
 type BindingContext = Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>;
@@ -232,6 +239,7 @@ export function createAgentBinding(options: {
     return {
       registry: async () => undefined,
       bind: async (_context: BindingContext): Promise<ReturnType<typeof bindAgent>> => ({}),
+      participant: async (_name: string): Promise<BrainstormParticipant | undefined> => undefined,
     };
   let reported = '';
   const load = async () => {
@@ -265,14 +273,36 @@ export function createAgentBinding(options: {
       );
       const config = registry.agents.get(name);
       if (!bound.agent || !config) return bound;
-      const names = requiredSkills(
-        config,
-        chat || asked ? undefined : await options.cardType?.(context.sessionId),
-      );
-      if (!names.length) return bound;
-      const instructions = `${bound.agent.instructions}\n\n${skillInstructions(skills, names)}`;
+      const cardType = chat || asked ? undefined : await options.cardType?.(context.sessionId);
+      const agent =
+        cardType === brainstormCard
+          ? {
+              ...bound.agent,
+              tools: [...bound.agent.tools, 'brainstorm'],
+              instructions: `${bound.agent.instructions}\n${brainstormRules}`,
+            }
+          : bound.agent;
+      const names = requiredSkills(config, cardType);
+      if (!names.length) return { agent };
+      const instructions = `${agent.instructions}\n\n${skillInstructions(skills, names)}`;
       if (!chat) await context.emit?.('step', `Loaded skills: ${names.join(', ')}`);
-      return { agent: { ...bound.agent, instructions } };
+      return { agent: { ...agent, instructions } };
+    },
+    participant: async (name: string): Promise<BrainstormParticipant | undefined> => {
+      const { registry, skills } = await load();
+      const config = registry.agents.get(name);
+      if (!config || name === routerAgent) return undefined;
+      const names = requiredSkills(config, brainstormCard);
+      return {
+        name,
+        title: config.title,
+        tools: config.tools,
+        instructions: [
+          config.instructions,
+          participantRules,
+          ...(names.length ? [skillInstructions(skills, names)] : []),
+        ].join('\n\n'),
+      };
     },
   };
 }

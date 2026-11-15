@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import type {
+  BrainstormHooks,
+  BrainstormParticipant,
+  BrainstormRound,
+} from '../../ports/brainstorm.ts';
 import {
   askLimit,
+  brainstormCard,
   cardAnswer,
   cardAsk,
   cardRefusal,
@@ -50,6 +56,7 @@ export function createCards(options: {
   pool: Pool;
   ownerId: string;
   registry: () => Promise<AgentRegistry | undefined>;
+  participant?: (name: string) => Promise<BrainstormParticipant | undefined>;
 }) {
   const { pool, ownerId } = options;
 
@@ -79,6 +86,15 @@ export function createCards(options: {
         flagged_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (owner_id, task_id, to_agent)
+      );
+      CREATE TABLE IF NOT EXISTS agent_brainstorms (
+        task_id uuid PRIMARY KEY REFERENCES tasks(id),
+        owner_id text NOT NULL,
+        participants text[] NOT NULL,
+        devils_advocate text NOT NULL,
+        rounds jsonb,
+        completed_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now()
       );
     `);
   }
@@ -161,8 +177,10 @@ export function createCards(options: {
 
   const finish: CardHooks['finish'] = async (client, taskId, request) => {
     const card = (
-      await client.query(
-        'SELECT task_id FROM agent_cards WHERE task_id=$1 AND owner_id=$2 FOR NO KEY UPDATE',
+      await client.query<{ card_type: string; ran: boolean }>(
+        `SELECT c.card_type,EXISTS(SELECT 1 FROM agent_brainstorms b
+           WHERE b.task_id=c.task_id AND b.owner_id=c.owner_id AND b.completed_at IS NOT NULL) AS ran
+         FROM agent_cards c WHERE c.task_id=$1 AND c.owner_id=$2 FOR NO KEY UPDATE OF c`,
         [taskId, ownerId],
       )
     ).rows[0];
@@ -174,7 +192,12 @@ export function createCards(options: {
       if (!request.result?.trim()) throw cardRefusal('Finishing a task needs result.');
       return request.result.trim();
     }
-    const result = cardResult(request);
+    const brainstorm = card.card_type === brainstormCard;
+    if (brainstorm && request.question === undefined && !card.ran)
+      throw cardRefusal(
+        "This brainstorm can't close before its rounds have run. Run them with brainstorm {participants}, then converge to a top 3.",
+      );
+    const result = cardResult(request, brainstorm);
     await client.query('UPDATE agent_cards SET result=$3 WHERE task_id=$1 AND owner_id=$2', [
       taskId,
       ownerId,
@@ -439,6 +462,131 @@ export function createCards(options: {
     return { answered: true, exchange: exchanges.length };
   }
 
+  function brainstorm(turn: TurnRef): BrainstormHooks {
+    const locked = <T>(work: (client: PoolClient) => Promise<T>) =>
+      transaction(async (client) => {
+        await lockThread(client);
+        return withTurnLock(turn.turnId, () => work(client), client);
+      }, pool);
+    const session = async (client: PoolClient) => {
+      const card = (
+        await client.query<{
+          task_id: string;
+          agent: string;
+          card_type: string;
+          title: string;
+          brief: string;
+          done_when: string;
+          state: string;
+          participants: string[] | null;
+          devils_advocate: string | null;
+          completed: boolean;
+        }>(
+          `SELECT c.task_id,c.agent,c.card_type,t.title,t.brief,t.done_when,t.state,
+             b.participants,b.devils_advocate,b.completed_at IS NOT NULL AS completed
+           FROM turns u JOIN agent_cards c ON c.task_id=u.task_id AND c.owner_id=u.owner_id
+           JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
+           LEFT JOIN agent_brainstorms b ON b.task_id=c.task_id AND b.owner_id=c.owner_id
+           WHERE u.id=$1 AND u.owner_id=$2 FOR NO KEY UPDATE OF t`,
+          [turn.turnId, ownerId],
+        )
+      ).rows[0];
+      if (!card || card.card_type !== brainstormCard)
+        throw cardRefusal(
+          `Only a brainstorm card runs brainstorm rounds. Start a card with cardType ${brainstormCard} for one.`,
+        );
+      if (card.state !== 'open')
+        throw cardRefusal('This card is closed, so its brainstorm is over.');
+      if (card.completed)
+        throw cardRefusal(
+          'This brainstorm already ran its rounds, and they run only once. Converge to a top 3 and close the card.',
+        );
+      return card;
+    };
+    return {
+      begin: (input) =>
+        locked(async (client) => {
+          const card = await session(client);
+          const registry = await options.registry();
+          if (!registry || !options.participant)
+            throw cardRefusal(
+              'Agents are off, so brainstorms are unavailable. Set NOD_AGENTS_ROOT to turn them on.',
+            );
+          const others = cardOwners(registry)
+            .filter((agent) => agent.name !== card.agent)
+            .map((agent) => agent.name);
+          const names = [...new Set(input.participants.map((name) => name.trim()))];
+          if (names.length !== input.participants.length || names.length < 3 || names.length > 5)
+            throw cardRefusal(
+              `A brainstorm needs 3 to 5 different agents other than you, from: ${others.join(', ')}.`,
+            );
+          for (const name of names)
+            if (!others.includes(name))
+              throw cardRefusal(
+                name === card.agent
+                  ? `${name} owns this card and converges at the end, so pick 3 to 5 other agents from: ${others.join(', ')}.`
+                  : `${name} is not an agent that can take part in a brainstorm. Pick from: ${others.join(', ')}.`,
+              );
+          const devilsAdvocate = input.devilsAdvocate?.trim() ?? names.at(-1)!;
+          if (!names.includes(devilsAdvocate))
+            throw cardRefusal(
+              `The devil's advocate must be one of the participants: ${names.join(', ')}.`,
+            );
+          const participants = [];
+          for (const name of names) {
+            const agent = await options.participant(name);
+            if (!agent)
+              throw cardRefusal(
+                `The config for ${name} in agents/ is missing or invalid, so it can't take part. Pick another agent or ask the owner to fix it.`,
+              );
+            participants.push(agent);
+          }
+          await client.query(
+            `INSERT INTO agent_brainstorms(task_id,owner_id,participants,devils_advocate)
+             VALUES($1,$2,$3,$4) ON CONFLICT (task_id) DO UPDATE
+             SET participants=EXCLUDED.participants,devils_advocate=EXCLUDED.devils_advocate`,
+            [card.task_id, ownerId, names, devilsAdvocate],
+          );
+          return {
+            topic: [card.title, card.brief, `Done when: ${card.done_when}`]
+              .filter(Boolean)
+              .join('\n'),
+            participants,
+            devilsAdvocate,
+          };
+        }),
+      save: (rounds) =>
+        locked(async (client) => {
+          const card = await session(client);
+          if (!card.participants || !card.devils_advocate)
+            throw cardRefusal('This brainstorm has no participants yet. Run brainstorm first.');
+          const everyone = [...card.participants].sort().join(',');
+          const each = (round: BrainstormRound | undefined, name: BrainstormRound['round']) =>
+            round?.round === name &&
+            round.entries
+              .map((entry) => entry.agent)
+              .sort()
+              .join(',') === everyone;
+          const [ideas, build, devil, ...extra] = rounds;
+          if (
+            extra.length ||
+            !each(ideas, 'ideas') ||
+            !each(build, 'build') ||
+            devil?.round !== 'devil' ||
+            devil.entries.length !== 1 ||
+            devil.entries[0]!.agent !== card.devils_advocate
+          )
+            throw cardRefusal(
+              "A brainstorm saves exactly its rounds in order: private ideas and cross-build from every participant, then one devil's advocate.",
+            );
+          await client.query(
+            'UPDATE agent_brainstorms SET rounds=$3,completed_at=now() WHERE task_id=$1 AND owner_id=$2',
+            [card.task_id, ownerId, JSON.stringify(rounds)],
+          );
+        }),
+    };
+  }
+
   async function act(turn: TurnRef, raw: unknown) {
     const action = (raw as { action?: unknown } | undefined)?.action;
     if (
@@ -528,6 +676,7 @@ export function createCards(options: {
     askedAgentFor,
     isCardTurn,
     act,
+    brainstorm,
     read,
   };
 }

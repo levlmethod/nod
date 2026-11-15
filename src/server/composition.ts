@@ -890,7 +890,12 @@ async function initializeApplication(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
   );
-  const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
+  const cards = createCards({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    participant: (name) => agents.participant(name),
+  });
   const agents = createAgentBinding({
     knownTools: Object.keys(toolDefinitions),
     cardAgent: cards.agentFor,
@@ -2159,6 +2164,9 @@ async function initializeApplication(
                 .runTurn({
                   ...context,
                   ...agentBinding,
+                  ...(agentBinding.agent?.tools.includes('brainstorm')
+                    ? { brainstorm: cards.brainstorm(context) }
+                    : {}),
                   runtimeHost: desktopMode ? 'desktop' : 'server',
                 })
                 .finally(() => proactivity.release(context.turnId)),

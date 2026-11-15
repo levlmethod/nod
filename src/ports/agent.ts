@@ -2,6 +2,7 @@ import type { Presentation } from '../shared/presentation.ts';
 import type { AnswerChoices } from '../shared/answer-choices.ts';
 import type { ProviderUsageEvent } from './provider-usage.ts';
 import type { ExecutionEvent, ExecutionScope } from '../shared/execution.ts';
+import type { BrainstormHooks } from './brainstorm.ts';
 import type { ConnectedApp } from './integrations.ts';
 import type { DiscoveredTool } from './discovered.ts';
 import type { BrowserAction, BrowserPage, CredentialKind, WorkspaceSession } from './computer.ts';
@@ -175,6 +176,7 @@ export interface RuntimeContext {
     Pick<CredentialRequest, 'turnId' | 'origin' | 'label' | 'kind' | 'status'>
   >;
   agent?: { name: string; title: string; tools: readonly string[]; instructions: string };
+  brainstorm?: BrainstormHooks;
   taskContext?: {
     id: string;
     title: string;
