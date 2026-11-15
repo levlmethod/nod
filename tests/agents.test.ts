@@ -541,11 +541,13 @@ Investigate metric changes with evidence.
   });
   try {
     const threadId = randomUUID();
-    const sessionId = randomUUID();
+    const sessionId: string = randomUUID();
+    const oddSession: string = randomUUID();
     const binding = createAgentBinding({
       knownTools: ['task', 'ask_user', 'apps', 'send_message'],
-      cardAgent: async (id) => (id === sessionId ? 'growth-analyst' : undefined),
-      cardType: async (id) => (id === sessionId ? 'investigation' : undefined),
+      cardAgent: async (id) =>
+        [sessionId, oddSession].includes(id) ? 'growth-analyst' : undefined,
+      cardType: async (id) => (id === sessionId ? 'investigation' : 'constructor'),
       root,
       skills: { root: skillsRoot, library: builtInSkills },
     });
@@ -570,7 +572,14 @@ Investigate metric changes with evidence.
       checked = true;
     });
     assert.ok(checked);
-    assert.deepEqual(activity, [['step', 'Loaded skills: attribution, research, anomaly-triage']]);
+    assert.equal(activity.length, 1);
+    assert.equal(activity[0]![0], 'step');
+    for (const name of ['attribution', 'research', 'anomaly-triage'])
+      assert.ok(activity[0]![1].includes(name));
+    assert.ok(!activity[0]![1].includes('idea-rounds'));
+    const untyped = await binding.bind({ threadId, sessionId: oddSession });
+    assert.match(untyped.agent?.instructions ?? '', /Cite every source you used\./);
+    assert.doesNotMatch(untyped.agent?.instructions ?? '', /Rule out tracking breaks first\./);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(skillsRoot, { recursive: true, force: true });

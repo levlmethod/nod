@@ -27,14 +27,19 @@ function forkSkill(root: string, name: string) {
     throw error;
   }
   if (!path.startsWith(realpathSync(root) + sep) || !statSync(path).isFile())
-    throw new Error(`agent-skills/${name}/SKILL.md must be a file inside agent-skills/.`);
+    throw new Error(`${name}/SKILL.md must be a file inside the agent skills folder.`);
   return readFileSync(path, 'utf8');
 }
 
 export function loadAgentSkills(sources: AgentSkillSources) {
   const root = sources.root ?? agentSkillsRoot();
   const library = sources.library;
-  const content = (name: string) =>
+  const read = new Map<string, string | undefined>();
+  const content = (name: string) => {
+    if (!read.has(name)) read.set(name, find(name));
+    return read.get(name);
+  };
+  const find = (name: string) =>
     forkSkill(root, name) ??
     (library &&
     (library.catalog.some((skill) => skill.name === name) || library.core?.includes(name))
@@ -63,7 +68,12 @@ export type AgentSkills = ReturnType<typeof loadAgentSkills>;
 
 export function requiredSkills(config: AgentConfig, cardType?: string) {
   return [
-    ...new Set([...(config.skills ?? []), ...((cardType && config.cardSkills?.[cardType]) || [])]),
+    ...new Set([
+      ...(config.skills ?? []),
+      ...(cardType && config.cardSkills && Object.hasOwn(config.cardSkills, cardType)
+        ? config.cardSkills[cardType]!
+        : []),
+    ]),
   ];
 }
 
