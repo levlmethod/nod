@@ -15,6 +15,18 @@ export type TaboolaCredentials = { clientId: string; clientSecret: string; accou
 
 type Fetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+const failed = (message: string, statusCode: number) =>
+  Object.assign(new Error(message), { statusCode });
+
+const zone = (value: string) => {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const dimensions = [
   'day',
   'week',
@@ -32,7 +44,10 @@ const summaryInput = z
     days: z.number().int().min(1).max(90).default(14),
     monthToDate: z.boolean().default(false),
     includeToday: z.boolean().default(false),
-    timeZone: z.string().default('UTC'),
+    timeZone: z
+      .string()
+      .refine(zone, { message: 'timeZone must be an IANA time zone, such as America/New_York.' })
+      .default('UTC'),
     campaign: z.string().regex(/^\d+$/).optional(),
   })
   .strict();
@@ -115,14 +130,23 @@ export function taboolaSource(
       );
       if (named) reason = String(named);
     } catch {}
-    throw new Error(
+    throw failed(
       `Taboola ${what} failed with status ${response.status}${reason ? `: ${hide(reason)}` : '.'}`,
+      502,
     );
+  }
+
+  async function request(what: string, url: string | URL, init: RequestInit) {
+    try {
+      return await send(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (error) {
+      throw failed(`Taboola ${what} did not answer: ${hide((error as Error).message)}`, 502);
+    }
   }
 
   async function authorize() {
     if (token && token.expires > now().getTime() + 60_000) return token.value;
-    const response = await send(`${origin}/backstage/oauth/token`, {
+    const response = await request('sign-in', `${origin}/backstage/oauth/token`, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -133,12 +157,11 @@ export function taboolaSource(
         client_secret: credentials.clientSecret,
         grant_type: 'client_credentials',
       }).toString(),
-      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) return failure(response, 'sign-in');
     const body = (await response.json()) as { access_token?: unknown; expires_in?: unknown };
     if (typeof body.access_token !== 'string' || !body.access_token)
-      throw new Error('Taboola sign-in answered without an access token.');
+      throw failed('Taboola sign-in answered without an access token.', 502);
     const seconds = typeof body.expires_in === 'number' ? body.expires_in : 3600;
     token = { value: body.access_token, expires: now().getTime() + seconds * 1000 };
     return token.value;
@@ -147,10 +170,9 @@ export function taboolaSource(
   async function read(path: string, query: Record<string, string> = {}, retry = true) {
     const url = new URL(`/backstage/api/1.0/${path}`, origin);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
-    const response = await send(url, {
+    const response = await request(`read of ${url.pathname}`, url, {
       method: 'GET',
       headers: { authorization: `Bearer ${await authorize()}`, accept: 'application/json' },
-      signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status === 401 && retry) {
       token = undefined;
@@ -167,8 +189,9 @@ export function taboolaSource(
       : [];
     const found = accounts.find((item) => item.account_id === credentials.accountId);
     if (!found)
-      throw new Error(
+      throw failed(
         `${credentials.accountId} is not an account these credentials can read. Taboola lists ${accounts.length} other account${accounts.length === 1 ? '' : 's'} for them.`,
+        409,
       );
     return found;
   }
@@ -178,8 +201,9 @@ export function taboolaSource(
     const today = localDay(now(), input.timeZone);
     const end = input.includeToday ? today : new Date(today.getTime() - dayMs);
     const start = input.monthToDate
-      ? new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1))
+      ? new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1))
       : new Date(end.getTime() - (input.days - 1) * dayMs);
+    if (end < start) end.setTime(start.getTime());
     const body = await read(`${account}/reports/campaign-summary/dimensions/${input.dimension}`, {
       start_date: isoDay(start),
       end_date: isoDay(end),
@@ -222,6 +246,7 @@ export function createTaboola(options: {
   now?: () => Date;
 }) {
   const { pool, ownerId, grantVault } = options;
+  const connected = new Set<string>();
   const sources = new Map<string, { version: number; source: ReturnType<typeof taboolaSource> }>();
   const source = (credentials: TaboolaCredentials) =>
     taboolaSource(credentials, { fetch: options.fetch, now: options.now });
@@ -286,14 +311,17 @@ export function createTaboola(options: {
         'DELETE FROM taboola_connections WHERE owner_id=$1 AND id=$2',
         [ownerId, valid],
       );
-      if (!removed.rowCount) throw new Error('This Taboola connection is not connected.');
+      if (!removed.rowCount) throw failed('This Taboola connection is not connected.', 404);
       await grantVault.remove(valid, db);
     }, pool);
     sources.delete(valid);
   }
 
   async function servers(): Promise<ConnectedMcpServer[]> {
-    return (await rows()).map((row) => ({
+    const current = await rows();
+    connected.clear();
+    for (const row of current) connected.add(row.id);
+    return current.map((row) => ({
       connectionId: row.id,
       pathId: row.id,
       service: 'taboola',
@@ -303,22 +331,14 @@ export function createTaboola(options: {
     }));
   }
 
-  async function owns(connectionId: string) {
-    return Boolean(
-      (
-        await pool.query('SELECT 1 FROM taboola_connections WHERE owner_id=$1 AND id::text=$2', [
-          ownerId,
-          connectionId,
-        ])
-      ).rowCount,
-    );
-  }
-
   async function call(input: WatcherCall) {
     const grant = await grantVault.read(input.connectionId);
     let held = sources.get(input.connectionId);
     if (held?.version !== grant.version) {
-      held = { version: grant.version, source: source(JSON.parse(grant.value)) };
+      held = {
+        version: grant.version,
+        source: source(connectInput.parse(JSON.parse(grant.value))),
+      };
       sources.set(input.connectionId, held);
     }
     return held.source.call(input.tool, input.input);
@@ -330,8 +350,8 @@ export function createTaboola(options: {
   }) {
     return {
       servers: async () => [...(await other.servers()), ...(await servers())],
-      call: async (input: WatcherCall) =>
-        (await owns(input.connectionId)) ? call(input) : other.call(input),
+      call: (input: WatcherCall) =>
+        connected.has(input.connectionId) ? call(input) : other.call(input),
     };
   }
 
@@ -339,18 +359,9 @@ export function createTaboola(options: {
     app.get('/api/agents/taboola', async (_request, reply) =>
       reply.header('Cache-Control', 'no-store').send({ connections: await list() }),
     );
-    app.post('/api/agents/taboola', async (request, reply) => {
-      const parsed = connectInput.safeParse(request.body);
-      if (!parsed.success)
-        return reply
-          .status(400)
-          .send({ error: 'Enter the Taboola client ID, client secret and account ID.' });
-      try {
-        return reply.header('Cache-Control', 'no-store').send(await connect(parsed.data));
-      } catch (error) {
-        return reply.status(409).send({ error: (error as Error).message });
-      }
-    });
+    app.post('/api/agents/taboola', async (request, reply) =>
+      reply.header('Cache-Control', 'no-store').send(await connect(request.body)),
+    );
     app.delete<{ Params: { id: string } }>('/api/agents/taboola/:id', async (request, reply) => {
       await disconnect(request.params.id);
       return reply.header('Cache-Control', 'no-store').send({ connections: await list() });

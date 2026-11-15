@@ -33,7 +33,7 @@ export function TaboolaConnections() {
     event.preventDefault();
     const form = event.currentTarget;
     const fields = new FormData(form);
-    await run(() =>
+    const saved = await run(() =>
       api(path, {
         method: 'POST',
         body: JSON.stringify({
@@ -43,7 +43,7 @@ export function TaboolaConnections() {
         }),
       }),
     );
-    form.reset();
+    if (saved) form.reset();
   }
 
   return (

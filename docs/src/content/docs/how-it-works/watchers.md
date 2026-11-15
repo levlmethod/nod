@@ -75,7 +75,7 @@ Taboola has no MCP server, so the fork has its own read-only Taboola connection 
 ### Add the credentials
 
 1. In Taboola Backstage, ask your Taboola account manager for API access. They give you a client ID and a client secret. Note the advertiser's account ID (`account_id`, a text ID such as `rkmd-sc`, not the number).
-2. In Nod, open **Board**. Under **Taboola**, enter the client ID, client secret and account ID, and select **Connect Taboola**.
+2. In Nod, open **Board**. The section shows only when agents are on (`NOD_AGENTS_ROOT` is set). Under **Taboola**, enter the client ID, client secret and account ID, and select **Connect Taboola**.
 3. Nod signs in to Taboola and checks that the credentials can read that account before it saves anything. If Taboola refuses, the form shows Taboola's status and reason and saves nothing.
 4. Add the account to the client's file:
 
@@ -100,9 +100,9 @@ The Taboola connection has only three tools, and every request it sends to the B
 `get_campaign_summary` takes these inputs, all optional:
 
 - `days`: how many days through yesterday. Defaults to 14, at most 90. Yesterday is the last full day, so a partial today doesn't look like a drop.
-- `monthToDate: true`: from the first of the month instead, for a `pace` check.
+- `monthToDate: true`: from the first of the month instead, for a `pace` check. On the first of the month it reads the partial first day.
 - `includeToday: true`: also the partial current day.
-- `timeZone`: the IANA time zone that decides which day is today. Defaults to UTC.
+- `timeZone`: the IANA time zone that decides which day is today. Defaults to UTC. Taboola reports days in the advertiser account's time zone, so set it to that zone, or yesterday can be a partial day around midnight.
 - `dimension`: `day` by default, or `week`, `month`, `campaign_breakdown`, `campaign_day_breakdown`, `site_breakdown`, `country_breakdown` or `platform_breakdown`.
 - `campaign`: one campaign ID.
 

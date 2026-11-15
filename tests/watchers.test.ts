@@ -609,6 +609,13 @@ test('the Taboola connection offers only reads and sends the API nothing but GET
   await source.call('get_campaign_summary', { monthToDate: true, includeToday: true });
   assert.equal(recorded.requests.at(-1)!.url.searchParams.get('start_date'), '2026-11-01');
   assert.equal(recorded.requests.at(-1)!.url.searchParams.get('end_date'), '2026-11-15');
+  const firstOfMonth = taboolaSource(
+    { clientId: 'synthetic-client', clientSecret: taboolaSecret, accountId: taboolaAccount },
+    { fetch: recorded.fetch, now: () => new Date('2026-12-01T15:00:00Z') },
+  );
+  await firstOfMonth.call('get_campaign_summary', { monthToDate: true });
+  assert.equal(recorded.requests.at(-1)!.url.searchParams.get('start_date'), '2026-12-01');
+  assert.equal(recorded.requests.at(-1)!.url.searchParams.get('end_date'), '2026-12-01');
 
   const before = recorded.requests.length;
   await assert.rejects(
@@ -618,7 +625,7 @@ test('the Taboola connection offers only reads and sends the API nothing but GET
   assert.equal(recorded.requests.length, before);
   assert.deepEqual(
     recorded.requests.map((request) => `${request.method} ${request.url.pathname.split('/')[2]}`),
-    ['POST oauth', 'GET api', 'GET api', 'GET api'],
+    ['POST oauth', 'GET api', 'GET api', 'GET api', 'POST oauth', 'GET api'],
   );
 });
 
