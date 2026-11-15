@@ -27,8 +27,9 @@ thresholds:
     source:
       service: krowdit
       tool: growth_ga4_run_report
-      input: { metrics: [conversions], dimensions: [date], startDate: 8daysAgo }
+      input: { metrics: [keyEvents], dimensions: [date], startDate: 8daysAgo, endDate: yesterday }
       values: 'rows[].metricValues.0.value'
+      sortBy: 'rows[].dimensionValues.0.value'
     drop: 0.3
   failed-payments:
     agent: revenue-analyst
@@ -66,6 +67,7 @@ Each threshold has exactly one of `drop`, `rise`, `above`, `below` and `pace`. A
 - `tool` is the tool to call and `input` its arguments.
 - `values` is a path to the numbers in the tool's result, oldest first. Steps are separated by dots; `name[]` takes every item of a list and `name[field=value]` only the items whose field equals that value. The result's structured content is used when the server returns it, otherwise its text parsed as JSON.
 - `newestFirst: true` reverses a list that comes back newest first.
+- `sortBy` is a second path, read the same way, that finds one sort key per value, such as each row's date. The values are put in the keys' text order before the check, for a report like GA4's whose rows come back in no fixed order. A source with `sortBy` fails, with the reason, when the path finds a different number of keys than values, or a key that isn't text or a number.
 - `combine: count` checks how many items the path found, and `combine: sum` checks their total.
 
 ## Taboola

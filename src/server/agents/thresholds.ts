@@ -13,6 +13,7 @@ export const thresholdSchema = Type.Object(
         input: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
         values: Type.String({ minLength: 1 }),
         newestFirst: Type.Optional(Type.Boolean()),
+        sortBy: Type.Optional(Type.String({ minLength: 1 })),
         combine: Type.Optional(Type.Union([Type.Literal('sum'), Type.Literal('count')])),
       },
       { additionalProperties: false },
@@ -161,9 +162,26 @@ function pluck(value: unknown, path: string) {
   return current;
 }
 
+function sorted(data: unknown, found: unknown[], path: string) {
+  const keys = pluck(data, path);
+  if (keys.length !== found.length)
+    throw new Error(`sortBy ${path} found ${keys.length} keys for ${found.length} values.`);
+  const text = keys.map((key, index) => {
+    if (typeof key !== 'string' && typeof key !== 'number')
+      throw new Error(`sortBy ${path} found no key at position ${index}.`);
+    return String(key);
+  });
+  return found
+    .map((value, index) => ({ value, key: text[index]! }))
+    .sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0))
+    .map(({ value }) => value);
+}
+
 export function readSeries(result: unknown, source: Threshold['source']) {
-  const found = pluck(payload(result), source.values);
-  if (source.combine === 'count') return [found.length];
+  const data = payload(result);
+  const plucked = pluck(data, source.values);
+  if (source.combine === 'count') return [plucked.length];
+  const found = source.sortBy ? sorted(data, plucked, source.sortBy) : plucked;
   const numbers = found.map((item, index) => {
     const number = typeof item === 'number' ? item : typeof item === 'string' ? Number(item) : NaN;
     if (!Number.isFinite(number))

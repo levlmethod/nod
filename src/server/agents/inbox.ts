@@ -15,7 +15,7 @@ type Read = (
 type Inbox = {
   address: string;
   client: string;
-  tool?: { connection: string; name: string; args: Record<string, unknown> };
+  tool?: { connection: string; name: string; read?: string; args: Record<string, unknown> };
 };
 export type InboxMail = {
   threadId: string;
@@ -56,7 +56,12 @@ function inboxes(registry: AgentRegistry): Inbox[] {
         : {
             address: entry.address.trim().toLowerCase(),
             client: client.name,
-            tool: { connection: entry.connection, name: entry.tool, args: entry.args ?? {} },
+            tool: {
+              connection: entry.connection,
+              name: entry.tool,
+              ...(entry.read ? { read: entry.read } : {}),
+              args: entry.args ?? {},
+            },
           },
     ),
   );
@@ -101,29 +106,46 @@ function message(record: Record<string, unknown>, threadId?: string): InboxMail 
   };
 }
 
-function toolMail(value: unknown, found: InboxMail[] = [], depth = 0): InboxMail[] {
+function threadRecords(
+  value: unknown,
+  found: Array<Record<string, unknown>> = [],
+  depth = 0,
+): Array<Record<string, unknown>> {
   if (depth > 8) return found;
   if (typeof value === 'string') {
     if (!/^\s*[[{]/.test(value)) return found;
     try {
-      return toolMail(JSON.parse(value), found, depth + 1);
+      return threadRecords(JSON.parse(value), found, depth + 1);
     } catch {
       return found;
     }
   }
   if (Array.isArray(value)) {
-    for (const entry of value) toolMail(entry, found, depth + 1);
+    for (const entry of value) threadRecords(entry, found, depth + 1);
     return found;
   }
   if (!value || typeof value !== 'object') return found;
   const record = value as Record<string, unknown>;
   if (field(record, ['threadId', 'thread_id'])) {
-    const mail = message(record);
-    if (mail) found.push(mail);
+    found.push(record);
     return found;
   }
-  for (const entry of Object.values(record)) toolMail(entry, found, depth + 1);
+  for (const entry of Object.values(record)) threadRecords(entry, found, depth + 1);
   return found;
+}
+
+const toolMail = (value: unknown) =>
+  threadRecords(value).flatMap((record) => message(record) ?? []);
+
+function listedOnly(values: unknown[]) {
+  const newest = new Map<string, string>();
+  for (const record of values.flatMap((value) => threadRecords(value))) {
+    const thread = field(record, ['threadId', 'thread_id']);
+    const id = field(record, ['id', 'messageId', 'message_id']);
+    const sender = field(record, ['from', 'sender']) || header(record, 'from');
+    if (id && !sender && !newest.has(thread)) newest.set(thread, id);
+  }
+  return [...newest].map(([threadId, id]) => ({ threadId, id }));
 }
 
 function recordedMail(batch: ObservationBatch) {
@@ -213,17 +235,52 @@ export function createInbox(options: {
         `No connected account is named ${connection}, so ${inbox.address} can't be read.`,
       );
     const sourceId = `connections:${account.connectionId}`;
-    const catalog = await options.read({ sourceId, query: name }, signal);
-    const tools = catalog.records.flatMap(
-      (record) => (record.data.tools ?? []) as Array<{ name?: unknown }>,
+    const find = async (wanted: string) => {
+      const catalog = await options.read({ sourceId, query: wanted }, signal);
+      const tools = catalog.records.flatMap(
+        (record) => (record.data.tools ?? []) as Array<{ name?: unknown }>,
+      );
+      const tool = tools.find(
+        (item) =>
+          typeof item.name === 'string' &&
+          (item.name === wanted || item.name.endsWith(`:${wanted}`)),
+      )?.name as string | undefined;
+      if (!tool) throw new Error(`${connection} has no read tool named ${wanted}.`);
+      return tool;
+    };
+    const tool = await find(name);
+    const results = (await options.read({ sourceId, tool, args }, signal)).records.map(
+      (record) => record.data.result,
     );
-    const tool = tools.find(
-      (item) =>
-        typeof item.name === 'string' && (item.name === name || item.name.endsWith(`:${name}`)),
-    )?.name as string | undefined;
-    if (!tool) throw new Error(`${connection} has no read tool named ${name}.`);
-    const result = await options.read({ sourceId, tool, args }, signal);
-    return result.records.flatMap((record) => toolMail(record.data.result));
+    const mail = results.flatMap((value) => toolMail(value));
+    if (!inbox.tool.read) return mail;
+    const known = new Set(mail.map((item) => item.threadId));
+    const listed = listedOnly(results).filter((item) => !known.has(item.threadId));
+    if (!listed.length) return mail;
+    const seen = (
+      await pool.query<{ thread_id: string; message_id: string; state: string; attempts: number }>(
+        `SELECT thread_id,message_id,state,attempts FROM inbox_triage
+         WHERE owner_id=$1 AND inbox=$2 AND thread_id=ANY($3::text[])`,
+        [ownerId, inbox.address, listed.map((item) => item.threadId)],
+      )
+    ).rows;
+    const unread = listed
+      .filter((item) => {
+        const row = seen.find((entry) => entry.thread_id === item.threadId);
+        if (!row) return true;
+        if (row.state === 'card') return false;
+        if (row.message_id !== item.id) return true;
+        return row.state === 'failed' && row.attempts < attempts;
+      })
+      .slice(0, perInbox);
+    if (!unread.length) return mail;
+    const reader = await find(inbox.tool.read);
+    for (const item of unread) {
+      signal.throwIfAborted();
+      const read = await options.read({ sourceId, tool: reader, args: { id: item.id } }, signal);
+      mail.push(...read.records.flatMap((record) => toolMail(record.data.result)));
+    }
+    return mail;
   }
 
   async function open(

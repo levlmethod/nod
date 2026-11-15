@@ -74,6 +74,13 @@ The agency itself.
 title: RKMD
 budget:
   monthlyUsd: 500
+inboxes:
+  - address: help@rkmd.example
+    connection: Help Desk
+    tool: help_mail_search
+    read: help_mail_read
+    args:
+      query: in:inbox
 ---
 A client.
 `,
@@ -167,16 +174,44 @@ test(
 
     const gmailId = randomUUID();
     const toolsId = randomUUID();
+    const helpId = randomUUID();
     const accounts = async () => [
       { connectionId: gmailId, slug: 'gmail', name: 'Gmail', email: 'Contact@krowdit.example' },
       { connectionId: toolsId, slug: 'krowdit-tools', name: 'Krowdit Tools' },
+      { connectionId: helpId, slug: 'help-desk', name: 'Help Desk' },
     ];
+    let helpList: unknown = { messages: [] };
+    const helpMessages = new Map<string, unknown>();
     let gmail: ObservationBatch = { records: [] };
     let support: unknown = { content: [] };
     const reads: Array<ObservationQuery & { sourceId: string }> = [];
     const read = async (input: ObservationQuery & { sourceId: string }) => {
       reads.push(input);
       if (input.sourceId === `connections:${gmailId}`) return gmail;
+      if (input.sourceId === `connections:${helpId}` && input.query)
+        return {
+          records: [
+            {
+              id: 'tools',
+              version: '1',
+              available: true,
+              data: {
+                tools: [
+                  { name: 'mcp-2:help_mail_search', description: 'Search', schema: {} },
+                  { name: 'mcp-2:help_mail_read', description: 'Read', schema: {} },
+                ],
+              },
+            },
+          ],
+        };
+      if (input.sourceId === `connections:${helpId}` && input.tool) {
+        const result =
+          input.tool === 'mcp-2:help_mail_search'
+            ? helpList
+            : helpMessages.get(String((input.args as { id?: unknown }).id));
+        if (!result) throw new Error(`No scripted result for ${input.tool}`);
+        return { records: [{ id: 'read', version: '1', available: true, data: { result } }] };
+      }
       if (input.sourceId === `connections:${toolsId}` && input.query)
         return {
           records: [
@@ -409,6 +444,74 @@ test(
       assert.match(card.prompt, /a third charge/);
       assert.match(card.prompt, /support@formulaic\.example/);
     });
+
+    await t.test(
+      'an inbox whose search lists only IDs reads each new thread once with its read tool',
+      async () => {
+        gmail = { records: [] };
+        support = { content: [] };
+        const gmailMessage = (id: string, threadId: string, from: string, subject: string) => ({
+          id,
+          threadId,
+          labelIds: ['INBOX'],
+          snippet: `${subject} body`,
+          internalDate: '1794697957000',
+          payload: {
+            headers: [
+              { name: 'From', value: from },
+              { name: 'Subject', value: subject },
+            ],
+          },
+        });
+        helpList = {
+          messages: [
+            { id: 'help-3', threadId: 'help-thread-1' },
+            { id: 'help-2', threadId: 'help-thread-2' },
+            { id: 'help-1', threadId: 'help-thread-1' },
+          ],
+        };
+        helpMessages.set(
+          'help-3',
+          gmailMessage('help-3', 'help-thread-1', 'Ana <ana@patient.example>', 'Booking broken'),
+        );
+        helpMessages.set(
+          'help-2',
+          gmailMessage('help-2', 'help-thread-2', 'News <news@vendor.example>', 'Weekly news'),
+        );
+        decisions.set('Booking broken', {
+          needsWork: true,
+          client: 'rkmd',
+          agent: 'growth-analyst',
+          title: 'Find why booking broke',
+          doneWhen: 'The cause and a fix are on the card.',
+          estimateMinutes: 30,
+          reason: 'A patient cannot book.',
+        });
+        decisions.set('Weekly news', { needsWork: false, reason: 'A newsletter.' });
+        reads.length = 0;
+        const result = await inbox.check(signal);
+        assert.equal(result.opened.length, 1);
+        assert.deepEqual(result.failed, []);
+        const helpReads = () =>
+          reads
+            .filter((input) => input.sourceId === `connections:${helpId}` && input.tool)
+            .map((input) => `${input.tool} ${JSON.stringify(input.args)}`);
+        assert.deepEqual(helpReads(), [
+          'mcp-2:help_mail_search {"query":"in:inbox"}',
+          'mcp-2:help_mail_read {"id":"help-3"}',
+          'mcp-2:help_mail_read {"id":"help-2"}',
+        ]);
+        const card = (await opened()).at(-1);
+        assert.equal(card.client, 'rkmd');
+        assert.equal(card.activity_key, 'inbox:help@rkmd.example:help-thread-1');
+        assert.match(card.prompt, /ana@patient\.example/);
+
+        reads.length = 0;
+        const again = await inbox.check(signal);
+        assert.equal(again.opened.length, 0);
+        assert.deepEqual(helpReads(), ['mcp-2:help_mail_search {"query":"in:inbox"}']);
+      },
+    );
 
     await t.test('a decision naming no card owner opens nothing and says why', async () => {
       gmail = {

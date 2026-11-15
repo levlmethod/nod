@@ -36,6 +36,7 @@ export const clientSchema = Type.Object(
               address: Type.String({ minLength: 3 }),
               connection: Type.String({ minLength: 1 }),
               tool: Type.String({ minLength: 1 }),
+              read: Type.Optional(Type.String({ minLength: 1 })),
               args: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
             },
             { additionalProperties: false },

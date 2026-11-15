@@ -3,11 +3,19 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import type { Agent, AgentSessionOptions, AgentTool, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { mcpNamespaces, toolDefinitions } from '../src/runtime/tools.ts';
-import { bindAgent, createAgentBinding, loadAgentRegistry } from '../src/server/agents/registry.ts';
+import {
+  bindAgent,
+  cardOwners,
+  createAgentBinding,
+  loadAgentRegistry,
+} from '../src/server/agents/registry.ts';
+import { loadAgentSkills, rejectMissingSkills } from '../src/server/agents/skills.ts';
+import { writeRefusal } from '../src/server/agents/thresholds.ts';
 import { wallCard } from '../src/server/agents/clients.ts';
 import { scanBoard, type CardSnapshot } from '../src/server/agents/pm-scan.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
@@ -2341,4 +2349,74 @@ test('the browser image runs Google Chrome on Linux x64 and says why it falls ba
   assert.equal(arm.product, 'Chromium');
   assert.ok(arm.reason);
   assert.equal(containerBrowserProduct('x64', () => false).product, 'Chromium');
+});
+
+test('the shipped roster loads every agent, team and client, with its skills and watchers, and no agent can send, reply or refund', async () => {
+  const root = fileURLToPath(new URL('../agents/', import.meta.url));
+  const registry = await loadAgentRegistry(root, Object.keys(toolDefinitions));
+  const skills = loadAgentSkills({
+    root: fileURLToPath(new URL('../agent-skills/', import.meta.url)),
+  });
+  rejectMissingSkills(registry, skills);
+  assert.deepEqual(registry.problems, []);
+  assert.deepEqual(
+    Object.fromEntries([...registry.teams.values()].map((team) => [team.name, team.lead])),
+    { core: 'router', creative: 'creative-lead', growth: 'growth-lead' },
+  );
+  assert.deepEqual([...registry.agents.keys()].sort(), [
+    'ad-creative-maker',
+    'chief-of-staff',
+    'content-seo-analyst',
+    'copywriter',
+    'creative-lead',
+    'ga4-analyst',
+    'growth-lead',
+    'inbox',
+    'paid-media-analyst',
+    'pm',
+    'revenue-analyst',
+    'router',
+  ]);
+  const owners = cardOwners(registry);
+  assert.ok(owners.every((agent) => agent.team !== 'core'));
+  for (const agent of owners) {
+    assert.ok(agent.model && agent.budget?.cardUsd && agent.skills?.length, agent.name);
+    const names = [...(agent.skills ?? []), ...Object.values(agent.cardSkills ?? {}).flat()];
+    for (const name of names) assert.ok(skills.read(name).length > 200, `${agent.name}: ${name}`);
+    const writes = agent.tools.filter(
+      (tool) =>
+        tool.startsWith('mcp__') &&
+        /_(send|reply|forward|refund|archive|swap|retry|trash|delete)(_|$)/.test(tool),
+    );
+    assert.deepEqual(writes, [], agent.name);
+  }
+  assert.deepEqual([...registry.clients.keys()].sort(), ['formulaic', 'krowdit', 'rkmd']);
+  for (const client of registry.clients.values()) {
+    assert.equal(client.budget.monthlyUsd, 500, client.name);
+    for (const [name, threshold] of Object.entries(client.thresholds ?? {})) {
+      assert.ok(
+        owners.some((agent) => agent.name === threshold.agent),
+        `${client.name}.${name}`,
+      );
+      assert.equal(
+        writeRefusal({ name: threshold.source.tool, inputSchema: {} }, threshold.source.tool),
+        undefined,
+      );
+    }
+    for (const inbox of client.inboxes ?? [])
+      if (typeof inbox !== 'string')
+        for (const tool of [inbox.tool, inbox.read ?? 'read'])
+          assert.equal(writeRefusal({ name: tool, inputSchema: {} }, tool), undefined);
+  }
+  assert.deepEqual(Object.keys(registry.clients.get('rkmd')?.thresholds ?? {}).length > 0, true);
+  assert.deepEqual(
+    Object.keys(registry.clients.get('formulaic')?.thresholds ?? {}).length > 0,
+    true,
+  );
+  assert.deepEqual(registry.clients.get('krowdit')?.inboxes, ['contact@crowdit.ai']);
+  assert.equal(
+    (registry.clients.get('formulaic')?.inboxes ?? []).filter((inbox) => typeof inbox !== 'string')
+      .length,
+    1,
+  );
 });

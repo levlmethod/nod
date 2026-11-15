@@ -2,9 +2,10 @@
 title: Krowdit
 budget:
   monthlyUsd: 500
-# Add each connection Krowdit's own cards may use, by its service and account, e.g.
+# Krowdit's Stripe has no tools yet, so the Revenue Analyst reads it in its Krowdit browser profile
+# and no watcher checks it. Add a Stripe connection here, by its service and account, once one exists:
 #   - service: stripe
-#     account: billing@example.com
+#     account: <account>
 connections: []
 dataSources: [stripe]
 inboxes: [contact@crowdit.ai]

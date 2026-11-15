@@ -38,7 +38,21 @@ inboxes:
       query: in:inbox newer_than:1d
 ```
 
-Every call to that tool first passes Nod's strict read-only check, a small model request on each check, so a tool that sends, replies or changes anything is refused and nothing runs. Messages are taken from the tool's result wherever it lists objects with a thread ID (`threadId` or `thread_id`) and a sender (`from` or `sender`).
+Every call to that tool first passes Nod's strict read-only check, a small model request on each check, so a tool that sends, replies or changes anything is refused and nothing runs. Messages are taken from the tool's result wherever it lists objects with a thread ID (`threadId` or `thread_id`) and a sender (`from` or `sender`, or a `From` header).
+
+Some search tools, such as Gmail's, list only each message's ID and thread ID. For those, add `read`, the tool that reads one message by its ID:
+
+```yaml
+inboxes:
+  - address: support@formulaic.example
+    connection: krowdit
+    tool: support_mail_gmail_search
+    read: support_mail_gmail_read
+    args:
+      query: in:inbox newer_than:1d
+```
+
+Nod then reads the newest listed message of each thread, called with `{id}`, but only for a thread that has no card yet and whose newest message wasn't already triaged, up to 20 per check. Each read passes the same read-only check.
 
 A Gmail inbox is read from one hour before its last check, and on its first check from the last 24 hours. Up to 20 new threads per inbox are triaged on each check, oldest first; when more are waiting, the inbox's read window doesn't move, so the rest are triaged on the next check. Only the newest message of each thread is triaged. Mail the agency sent itself, marked sent or sent from the inbox's own address, is skipped.
 

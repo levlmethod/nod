@@ -19,10 +19,12 @@ agents/
 │   ├── pm.md
 │   ├── inbox.md
 │   └── chief-of-staff.md
-└── growth/
-    ├── team.md
-    ├── growth-lead.md
-    └── paid-media-analyst.md
+├── growth/
+│   ├── team.md
+│   ├── growth-lead.md
+│   └── paid-media-analyst.md
+└── clients/
+    └── rkmd.md
 ```
 
 Every team folder has a `team.md` file. Its frontmatter names the team's `lead`, which must be an agent in the same folder, and a `routing` description that says what work the team takes:
@@ -62,6 +64,29 @@ Lead the growth team. Split work into cards for the right analyst.
 | `workflows`   | No       | n8n workflows. Reserved for phase 2 and not used yet.                                                                                      |
 
 Nod reads the folder again at the start of every turn, so an edit takes effect on the next message. A file that can't be read, has no frontmatter, has an unknown or missing field, or sits outside a team folder is skipped. So is a team whose lead isn't one of its agents. Each skipped file is logged as `agent_config_rejected` with its path and reason, and every valid agent still loads.
+
+## The shipped roster
+
+The repository ships the agency's Phase 1 roster. Edit or add files to change it.
+
+| Team       | Agent                  | Owns                                                                                         |
+| ---------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `core`     | `router` (lead)        | The main chat. Turns requests into cards.                                                    |
+| `core`     | `pm`                   | Flagged cards. See [The PM](#the-pm).                                                        |
+| `core`     | `inbox`                | New mail. See [Inbox triage](/how-it-works/inbox-triage/).                                   |
+| `core`     | `chief-of-staff`       | The [morning digest](/how-it-works/morning-digest/).                                         |
+| `growth`   | `growth-lead` (lead)   | Growth plans and cross-channel questions, split into cards for the analysts.                 |
+| `growth`   | `paid-media-analyst`   | Meta and Taboola spend, pacing, CPA and ROAS.                                                |
+| `growth`   | `ga4-analyst`          | GA4 traffic, engagement, key events and tracking breaks.                                     |
+| `growth`   | `revenue-analyst`      | Stripe charges, subscriptions, failed payments, churn and refunds, and the product database. |
+| `growth`   | `content-seo-analyst`  | Site and blog content, organic search and Instagram.                                         |
+| `creative` | `creative-lead` (lead) | Creative direction and concepts, split between the copywriter and the ad creative maker.     |
+| `creative` | `copywriter`           | Ad, email, site and social copy, and reply drafts to customers and clients.                  |
+| `creative` | `ad-creative-maker`    | Ad images and short video, made and scored with the Krowdit tools.                           |
+
+Only the core agents can't own cards. Every other agent has a model, a card budget, required skills from `agent-skills/` and its own tool list.
+
+The client tools come from the agency's Krowdit MCP server, listed by their full names, such as `mcp__krowdit__growth_ga4_run_report`. The middle part is the server's service name, so connect the server with the service name `krowdit`, or the agents won't see its tools. A card still sees a tool only when the server is one of its client's `connections`. The agents get read tools and Gmail drafts, never a tool that sends, replies, refunds, archives or deletes. Where a client has no tools for a source, such as Taboola, RKMD's GA4 or Krowdit's Stripe, the agent reads it in its browser profile for that client, so the analysts list `browser`, `browser_session` and `sign_in`.
 
 ## Required skills
 

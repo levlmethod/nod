@@ -6,7 +6,12 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import type { ConnectedMcpServer } from '../src/ports/agent.ts';
 import { loadAgentRegistry } from '../src/server/agents/registry.ts';
-import { checkThreshold, writeRefusal, type Threshold } from '../src/server/agents/thresholds.ts';
+import {
+  checkThreshold,
+  readSeries,
+  writeRefusal,
+  type Threshold,
+} from '../src/server/agents/thresholds.ts';
 
 async function configRoot(files: Record<string, string>) {
   const root = await mkdtemp(join(tmpdir(), 'nod-watchers-'));
@@ -109,6 +114,36 @@ test('only tools that read pass the watcher guard, whatever the server hints', (
 test('a drop or rise with fewer than two points never trips, and an empty series is an error', () => {
   assert.equal(checkThreshold(rule({ drop: 0.1 }), [1]), undefined);
   assert.throws(() => checkThreshold(rule({ above: 1 }), []), /no numbers/);
+});
+
+test('a report whose rows come back unordered is read oldest first by its sort path', () => {
+  const report = {
+    structuredContent: {
+      rows: [
+        { dimensionValues: [{ value: '20261112' }], metricValues: [{ value: '239' }] },
+        { dimensionValues: [{ value: '20261114' }], metricValues: [{ value: '120' }] },
+        { dimensionValues: [{ value: '20261113' }], metricValues: [{ value: '206' }] },
+      ],
+    },
+  };
+  const ga4 = {
+    service: 'krowdit',
+    tool: 'growth_ga4_run_report',
+    values: 'rows[].metricValues.0.value',
+  };
+  assert.deepEqual(
+    readSeries(report, { ...ga4, sortBy: 'rows[].dimensionValues.0.value' }),
+    [239, 206, 120],
+  );
+  assert.deepEqual(readSeries(report, ga4), [239, 120, 206]);
+  assert.throws(
+    () => readSeries(report, { ...ga4, sortBy: 'rows[].dimensionValues.1.value' }),
+    /sortBy rows\[\]\.dimensionValues\.1\.value found no key at position 0/,
+  );
+  assert.throws(
+    () => readSeries(report, { ...ga4, sortBy: 'rows[status=x].dimensionValues.0.value' }),
+    /sortBy .* found 0 keys for 3 values/,
+  );
 });
 
 const growth = {
