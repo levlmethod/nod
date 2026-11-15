@@ -1064,9 +1064,9 @@ Write copy in the client's brand voice.
         assert.deepEqual(
           card?.activity.map((entry) => `${entry.actor}:${entry.action}`),
           [
-            'pm:flagged',
-            'pm:flagged',
-            'pm:flagged',
+            'scan:flagged',
+            'scan:flagged',
+            'scan:flagged',
             'pm:nudge',
             'pm:reassign',
             'pm:split',
@@ -1103,23 +1103,43 @@ Write copy in the client's brand voice.
         decision: 'Treat the refund email as unchanged; check the billing page instead.',
       });
       assert.match((await resumes(task.id)).at(-1)!, /made the call[\s\S]*billing page/);
-      await assert.rejects(
-        cards.act(
-          await running(
-            (
-              await db.pool.query<{ id: string }>(
-                "SELECT id FROM turns WHERE session_id=$1 AND status='queued' LIMIT 1",
-                [asked.ask],
-              )
-            ).rows[0]!.id,
-          ),
-          { action: 'answer', id: asked.ask, answer: 'Late answer.' },
-        ),
-        /no question/,
+      assert.equal(
+        (
+          await db.pool.query(
+            "SELECT 1 FROM turns WHERE session_id=$1 AND status IN ('queued','running','waiting')",
+            [asked.ask],
+          )
+        ).rowCount,
+        0,
       );
       const [card] = await cards.read([task.id]);
       assert.equal(card?.activity.at(-1)?.action, 'decide');
       await settle(turn.turnId);
+    });
+
+    await t.test('a flag comes back when the PM turn it went to failed', async () => {
+      await db.pool.query("UPDATE tasks SET state='cancelled',closed_at=now() WHERE state='open'");
+      const { task } = await routerCard('Review the RKMD landing page.', { estimateMinutes: 60 });
+      await db.pool.query(
+        "UPDATE turns SET status='succeeded',started_at=now()-interval '31 minutes',finished_at=now()-interval '30 minutes' WHERE id=$1",
+        [(await cardTurn(task.id)).turnId],
+      );
+      assert.deepEqual(
+        (await pm.scan()).flags.map((flag) => flag.kind),
+        ['unfinished'],
+      );
+      const { turn } = await pmTurn();
+      await db.pool.query("UPDATE turns SET status='failed',finished_at=now() WHERE id=$1", [
+        turn.turnId,
+      ]);
+      assert.deepEqual(
+        (await pm.scan()).flags.map((flag) => flag.kind),
+        ['unfinished'],
+      );
+      const { turn: retry } = await pmTurn();
+      await pm.act(retry, { action: 'nudge', id: task.id, message: 'Close it with a result.' });
+      await settle(retry.turnId);
+      assert.deepEqual((await pm.scan()).flags, []);
     });
   },
 );

@@ -105,17 +105,17 @@ Every 30 minutes, while agents are on, code scans every open card without a mode
 - the model spend of its turns and of the turns answering its asks passes its `budget.cardUsd`;
 - it is still open 15 minutes after its last turn ended, with nothing queued, no open child cards, no ask being answered and no planned check, because a final reply alone doesn't close a card.
 
-Each flag is recorded in the card's activity and isn't raised again until the problem gets worse or comes back. When nothing new is flagged, nothing else happens. Otherwise one PM turn starts in its own background session, with the flagged cards, their flags and their asks. A new PM turn doesn't start while the last one is still queued, running or waiting.
+Each flag is recorded in the card's activity and isn't raised again until the problem gets worse or comes back, unless the PM turn it was sent to failed or was stopped before the PM acted on the card, in which case the next scan raises it again. When nothing new is flagged, nothing else happens. Otherwise one PM turn starts in its own background session, with the flagged cards, their flags and their asks. A new PM turn doesn't start while the last one is still queued or running.
 
 The PM runs as the `pm` agent from `agents/core/pm.md`. Whatever its config lists, its only tool is `task`, and in its session only `task list` and these actions work, each only on a card its board check flagged:
 
-| Action                                                                   | What it does                                                                                                         |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `nudge {id, message}`                                                    | Resumes the card's owner agent with the PM's direction.                                                              |
-| `split {id, cards: [{agent, title, doneWhen, estimateMinutes}], reason}` | Resumes the owner agent with the child cards to start; the agent starts them, since a card starts from its own turn. |
-| `reassign {id, agent, reason}`                                           | Gives the card to another agent, which continues it on the card's next turn.                                         |
-| `decide {ask, decision}`                                                 | Makes the call on a stuck ask: the asking card is resumed with the decision, and a late answer is refused.           |
-| `escalate {id, question}`                                                | Posts the PM's question about the card in the main chat.                                                             |
+| Action                                                                   | What it does                                                                                                                    |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `nudge {id, message}`                                                    | Resumes the card's owner agent with the PM's direction.                                                                         |
+| `split {id, cards: [{agent, title, doneWhen, estimateMinutes}], reason}` | Resumes the owner agent with the child cards to start; the agent starts them, since a card starts from its own turn.            |
+| `reassign {id, agent, reason}`                                           | Gives the card to another agent, which continues it on the card's next turn.                                                    |
+| `decide {ask, decision}`                                                 | Makes the call on a stuck ask: the asked agent's unfinished answer is stopped and the asking card is resumed with the decision. |
+| `escalate {id, question}`                                                | Posts the PM's question about the card in the main chat as a notice; the owner answers through the Router or the card.          |
 
 A blocked card can't be nudged or split until its blockers close. Every action is saved in the card's activity, in the `agent_card_activity` table, with the PM's reason; `cards.read` returns it with the card. The PM can't own, ask on or do a card's work, and the Router never routes work to it. If `pm.md` is missing or invalid, the PM still runs with the same tool and rules.
 

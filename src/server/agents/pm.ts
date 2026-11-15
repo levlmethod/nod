@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { PgBoss } from 'pg-boss';
 import { cardRefusal, pmAction, pmActions } from '../../shared/cards.ts';
 import { logFailure } from '../failure-log.ts';
 import {
+  cancelTurns,
   enqueueTurn,
   insertAssistantMessage,
   lockThread,
@@ -13,11 +14,9 @@ import {
 } from '../thread.ts';
 import { transaction } from '../transaction.ts';
 import type { WorkConsumers } from '../work-admission.ts';
-import { unsettled, type createCards } from './cards.ts';
+import { unsettled, type createCards, type Exchange } from './cards.ts';
 import { cardOwners, type AgentRegistry } from './registry.ts';
-import { loopWindow, scanBoard, type BoardSnapshot, type Flag } from './pm-scan.ts';
-
-const digest = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 16);
+import { digest, loopWindow, scanBoard, type BoardSnapshot, type Flag } from './pm-scan.ts';
 
 type Cards = ReturnType<typeof createCards>;
 
@@ -102,7 +101,11 @@ export function createPm(options: {
              AND (t.next_check IS NULL OR t.next_check<=now())
            THEN (SELECT max(u.finished_at) FROM turns u WHERE u.owner_id=c.owner_id AND u.session_id=t.session_id) END AS idle_since,
            ARRAY(SELECT v.flag_key FROM agent_card_activity v
-             WHERE v.owner_id=c.owner_id AND v.task_id=c.task_id AND v.flag_key IS NOT NULL) AS handled
+             WHERE v.owner_id=c.owner_id AND v.task_id=c.task_id AND v.flag_key IS NOT NULL
+               AND (EXISTS(SELECT 1 FROM agent_card_activity p WHERE p.owner_id=v.owner_id AND p.task_id=v.task_id
+                   AND p.actor='pm' AND p.created_at>=v.created_at)
+                 OR NOT EXISTS(SELECT 1 FROM (SELECT u.status FROM turns u WHERE u.owner_id=v.owner_id AND u.session_id=v.run_id
+                   ORDER BY u.created_at DESC,u.id DESC LIMIT 1) l WHERE l.status IN ('failed','cancelled')))) AS handled
          FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
          WHERE c.owner_id=$1 AND t.state='open'
          ORDER BY c.created_at,c.task_id`,
@@ -158,7 +161,7 @@ export function createPm(options: {
         (
           await client.query(
             `SELECT 1 FROM agent_pm_runs r JOIN turns u ON u.session_id=r.id AND u.owner_id=r.owner_id
-             WHERE r.owner_id=$1 AND u.status IN ${live} LIMIT 1`,
+             WHERE r.owner_id=$1 AND u.status IN ('queued','running') LIMIT 1`,
             [ownerId],
           )
         ).rowCount,
@@ -171,32 +174,33 @@ export function createPm(options: {
     const started = await transaction(async (client) => {
       await lockThread(client);
       if (await running(client)) return false;
-      await client.query('INSERT INTO agent_pm_runs(id,owner_id,flags) VALUES($1,$2,$3)', [
-        runId,
-        ownerId,
-        JSON.stringify(flags),
-      ]);
       const fresh = [];
       for (const flag of flags)
         if (
           await cards.record(client, flag.taskId, {
-            actor: 'pm',
+            actor: 'scan',
             action: 'flagged',
             detail: flag.detail,
             flagKey: flag.key,
+            runId,
           })
         )
           fresh.push(flag);
       if (!fresh.length) return false;
+      await client.query('INSERT INTO agent_pm_runs(id,owner_id,flags) VALUES($1,$2,$3)', [
+        runId,
+        ownerId,
+        JSON.stringify(fresh),
+      ]);
       await enqueueTurn(brief(board, fresh), {
         source: 'task',
         sessionId: runId,
         background: true,
         client,
       });
-      return true;
+      return fresh;
     }, pool);
-    return started ? { flags, runId } : { flags: [] as Flag[] };
+    return started ? { flags: started, runId } : { flags: [] as Flag[] };
   }
 
   async function isPmSession(sessionId: string) {
@@ -247,11 +251,7 @@ export function createPm(options: {
           const ask =
             request.action === 'decide'
               ? (
-                  await client.query<{
-                    task_id: string;
-                    to_agent: string;
-                    exchanges: { question: string; answer?: string; unanswered?: boolean }[];
-                  }>(
+                  await client.query<{ task_id: string; to_agent: string; exchanges: Exchange[] }>(
                     'SELECT task_id,to_agent,exchanges FROM agent_card_asks WHERE owner_id=$1 AND id=$2 FOR UPDATE',
                     [ownerId, request.ask],
                   )
@@ -283,8 +283,12 @@ export function createPm(options: {
             ).rowCount,
           );
           const resume = async (prompt: string) => {
+            if (held) return;
             const latest = await cards.latestTurn(client, card.session_id);
-            if (held || !latest) return false;
+            if (!latest)
+              throw cardRefusal(
+                'This card has no turn to resume yet, so wait for its next board check.',
+              );
             await resumeTurn(
               latest,
               `pm:${run.id}:${taskId}:${randomUUID()}`,
@@ -292,7 +296,6 @@ export function createPm(options: {
               false,
               client,
             );
-            return true;
           };
           const record = (detail: string) =>
             cards.record(client, taskId, { actor: 'pm', action: request.action, detail });
@@ -362,10 +365,16 @@ export function createPm(options: {
               'UPDATE agent_card_asks SET exchanges=$3,flagged_at=COALESCE(flagged_at,now()) WHERE id=$1 AND owner_id=$2',
               [request.ask, ownerId, JSON.stringify(exchanges)],
             );
-            if (!held)
-              await resume(
-                `The PM made the call on your ask with ${ask!.to_agent}: ${request.decision}\nTake this as settled, don't ask ${ask!.to_agent} about it again, and carry on.`,
-              );
+            await cancelTurns(
+              client,
+              turn.threadId,
+              { sessionId: request.ask },
+              undefined,
+              'agent',
+            );
+            await resume(
+              `The PM made the call on your ask with ${ask!.to_agent}: ${request.decision}\nTake this as settled, don't ask ${ask!.to_agent} about it again, and carry on.`,
+            );
             await record(`On the ask with ${ask!.to_agent}: ${request.decision}`);
             return { decided: request.ask };
           }

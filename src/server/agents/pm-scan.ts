@@ -26,7 +26,8 @@ export const loopWindow = 12;
 const loopRepeats = 4;
 const idleMinutes = 15;
 
-const digest = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 16);
+export const digest = (text: string) =>
+  createHash('sha256').update(text).digest('hex').slice(0, 16);
 const normalized = (question: string) =>
   question
     .toLowerCase()

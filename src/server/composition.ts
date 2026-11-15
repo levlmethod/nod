@@ -2191,8 +2191,8 @@ async function initializeApplication(
       },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
-        const managed = await pm.act(turn, raw);
-        if (managed !== undefined) return managed;
+        const pmResult = agents.enabled ? await pm.act(turn, raw) : undefined;
+        if (pmResult !== undefined) return pmResult;
         const handled = await cards.act(turn, raw);
         if (handled !== undefined) return handled;
         const request = raw as { action?: unknown; model?: unknown } | undefined;

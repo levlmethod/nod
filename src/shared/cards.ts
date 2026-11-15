@@ -99,7 +99,9 @@ export const pmAction = z.discriminatedUnion('action', [
 
 export type PmAction = z.infer<typeof pmAction>;
 
-export const pmActions = new Set<string>(['nudge', 'split', 'reassign', 'decide', 'escalate']);
+export const pmActions = new Set<string>(
+  pmAction.options.map((option) => option.shape.action.value),
+);
 
 export const cardActionParams = [
   Type.Object(

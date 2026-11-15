@@ -4,10 +4,11 @@ Every 30 minutes a pg-boss schedule runs a pure scan over a board snapshot of op
 
 The PM's only tool is `task`, and in its session only `list` and the PM actions work: `nudge`, `split`, `reassign`, `decide` and `escalate`, each refused for cards its run didn't flag and recorded in the card's activity. `split` resumes the owner agent with the child cards to start, because starting a card needs the card's own running turn. Loop detection needs each call's input, which upstream's `turn_events` don't keep, so the fork stores a hash of each card tool call in `agent_card_calls`.
 
+The PM actions join the `task` tool through the fork's card action parameters in `src/shared/cards.ts`, so `src/runtime/tools.ts` needs no new change.
+
 ## Upstream files touched
 
 - `src/server/composition.ts`: creates the PM service, starts its schedule when agents are on, records card tool calls from the runtime's `observe` hook, binds PM sessions to the `pm` agent, and lets the PM's actions handle the `task` tool first.
-- `src/runtime/tools.ts` is unchanged: the PM actions join the `task` tool through the card action parameters in `src/shared/cards.ts`.
 
 ## Considered options
 

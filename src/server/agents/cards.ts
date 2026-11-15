@@ -37,7 +37,7 @@ export type CardHooks = {
   closed(client: PoolClient): Promise<void>;
 };
 
-type Exchange = { question: string; answer?: string; unanswered?: boolean };
+export type Exchange = { question: string; answer?: string; unanswered?: boolean };
 
 export const unsettled = (task: string) =>
   `(${task}.state='open' OR (${task}.state='done' AND EXISTS(SELECT 1 FROM agent_cards q
@@ -90,6 +90,7 @@ export function createCards(options: {
         flag_key text,
         created_at timestamptz NOT NULL DEFAULT now()
       );
+      ALTER TABLE agent_card_activity ADD COLUMN IF NOT EXISTS run_id uuid;
       CREATE INDEX IF NOT EXISTS agent_card_activity_task ON agent_card_activity(owner_id,task_id,created_at);
       CREATE UNIQUE INDEX IF NOT EXISTS agent_card_activity_flag ON agent_card_activity(owner_id,task_id,flag_key)
         WHERE flag_key IS NOT NULL;
@@ -536,14 +537,24 @@ export function createCards(options: {
   async function record(
     client: PoolClient,
     taskId: string,
-    entry: { actor: string; action: string; detail: string; flagKey?: string },
+    entry: { actor: string; action: string; detail: string; flagKey?: string; runId?: string },
   ) {
     return Boolean(
       (
         await client.query(
-          `INSERT INTO agent_card_activity(id,owner_id,task_id,actor,action,detail,flag_key)
-           VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-          [ownerId, taskId, entry.actor, entry.action, entry.detail, entry.flagKey ?? null],
+          `INSERT INTO agent_card_activity(id,owner_id,task_id,actor,action,detail,flag_key,run_id)
+           VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (owner_id,task_id,flag_key) WHERE flag_key IS NOT NULL
+           DO UPDATE SET run_id=EXCLUDED.run_id,detail=EXCLUDED.detail,created_at=now()`,
+          [
+            ownerId,
+            taskId,
+            entry.actor,
+            entry.action,
+            entry.detail,
+            entry.flagKey ?? null,
+            entry.runId ?? null,
+          ],
         )
       ).rowCount,
     );
