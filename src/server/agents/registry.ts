@@ -64,6 +64,7 @@ export type AgentRegistry = {
 export const routerAgent = 'router';
 export const pmAgent = 'pm';
 export const inboxAgent = 'inbox';
+export const chiefOfStaffAgent = 'chief-of-staff';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -170,9 +171,8 @@ const pmRules = (owners: string) =>
   `You are the PM. You keep cards on track and never do a card's work: your only tool is task, and only these actions work:\n- task list: read the board.\n- task nudge {id, message}: resume the card's owner agent with your direction.\n- task split {id, cards: [{agent, title, doneWhen, estimateMinutes}], reason}: have the owner agent split its card into these child cards.\n- task reassign {id, agent, reason}: give the card to another agent, who continues it.\n- task decide {ask, decision}: make the call on a stuck ask; the asking card continues with your decision.\n- task escalate {id, question}: put one question to the owner in the main chat, only when no agent can decide.\nAct only on the cards the board scan flagged, pick the smallest action that unsticks each one, and end your turn when every flagged card has one. Every action is recorded on the card. Estimates are in agent minutes. Agents that can own a card: ${owners}.`;
 
 export function cardOwners(registry: AgentRegistry) {
-  return [...registry.agents.values()].filter(
-    (agent) => agent.name !== routerAgent && agent.name !== pmAgent && agent.name !== inboxAgent,
-  );
+  const systemAgents = new Set([routerAgent, pmAgent, inboxAgent, chiefOfStaffAgent]);
+  return [...registry.agents.values()].filter((agent) => !systemAgents.has(agent.name));
 }
 
 function roster(registry: AgentRegistry) {

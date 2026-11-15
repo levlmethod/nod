@@ -130,6 +130,7 @@ import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createBoard } from './agents/board.ts';
+import { createDigest } from './agents/digest.ts';
 import { createClientBudget } from './agents/client-budget.ts';
 import { createPm } from './agents/pm.ts';
 import { createWatchers } from './agents/watchers.ts';
@@ -917,6 +918,21 @@ async function initializeApplication(
   const pm = createPm({ pool, ownerId, registry: () => agents.registry(), cards });
   const tierQueue = createTierQueue({ pool, ownerId, registry: () => agents.registry() });
   const clientBudget = createClientBudget({ pool, ownerId, registry: () => agents.registry() });
+  const board = createBoard({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    cards,
+    spend: clientBudget.spend,
+  });
+  const digest = createDigest({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    board,
+    queue: tierQueue,
+    refresh,
+  });
   const analyzeImages =
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
@@ -1166,6 +1182,7 @@ async function initializeApplication(
   await clientBudget.initialize();
   await pm.initialize();
   await tierQueue.initialize();
+  await digest.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -2129,7 +2146,10 @@ async function initializeApplication(
       consumers,
       run: () => analytics.withSystemWork(ownerId, 'memory_learning', learning.run),
     });
-    if (agents.enabled) await pm.start({ boss, consumers });
+    if (agents.enabled) {
+      await pm.start({ boss, consumers });
+      await digest.start({ boss, consumers });
+    }
     await startThreadWorkers({
       present: communication.present,
       taskChecks: tasks.resumeDue,
@@ -2909,13 +2929,7 @@ async function initializeApplication(
     updatesEmail: onboardingProfile.available,
   }).register(app);
   ledger.registerRoutes(app);
-  createBoard({
-    pool,
-    ownerId,
-    registry: () => agents.registry(),
-    cards,
-    spend: clientBudget.spend,
-  }).registerRoutes(app);
+  board.registerRoutes(app);
   taboola.registerRoutes(app);
   activityLog.registerRoutes(app);
   registerSpeechSettings(app, {
