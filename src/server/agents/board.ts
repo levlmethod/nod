@@ -195,7 +195,7 @@ export function createBoard(options: {
         [ownerId, id],
       ),
       pool.query<{ actor: string; action: string; reason: string; created_at: Date }>(
-        `SELECT actor,action,reason,created_at FROM agent_card_actions
+        `SELECT actor,action,detail AS reason,created_at FROM agent_card_activity
          WHERE owner_id=$1 AND task_id=$2 ORDER BY created_at,id`,
         [ownerId, id],
       ),

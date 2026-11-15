@@ -1,6 +1,6 @@
 ---
 title: Agents and teams
-description: How the marketing fork defines agents and teams as config files, how the main chat runs as a Router that can only route work, how cards run as their owner agent, and how cards split, block and ask each other.
+description: How the marketing fork defines agents and teams as config files, how the main chat runs as a Router that can only route work, how cards run as their owner agent, how cards split, block and ask each other, and how the PM keeps them on track.
 sidebar:
   order: 8
 ---
@@ -15,7 +15,8 @@ Agents live in the `agents/` folder at the root of the repository. Set `NOD_AGEN
 agents/
 ├── core/
 │   ├── team.md
-│   └── router.md
+│   ├── router.md
+│   └── pm.md
 └── growth/
     ├── team.md
     ├── growth-lead.md
@@ -53,7 +54,7 @@ Lead the growth team. Split work into cards for the right analyst.
 | `skills`      | No       | Skills the agent must follow, loaded in full into every session it runs. See [Required skills](#required-skills).                          |
 | `cardSkills`  | No       | Extra skills per card type, such as `investigation: [anomaly-triage]`, loaded with `skills` on cards of that type.                         |
 | `connections` | No       | The app connections the agent may use. Not used yet; a card's connections come from its client.                                            |
-| `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; not enforced yet.                                                     |
+| `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; the PM flags a card that spends more.                                 |
 | `schedules`   | No       | The agent's recurring schedules. Not used yet.                                                                                             |
 | `knowledge`   | No       | Knowledge collections. Reserved for phase 2 and not used yet.                                                                              |
 | `workflows`   | No       | n8n workflows. Reserved for phase 2 and not used yet.                                                                                      |
@@ -93,7 +94,7 @@ Cards can depend on and talk to each other without anyone sharing work.
 
 - **Child cards.** An agent working a card can split it with `task start` naming another `agent` and `estimateMinutes`. The child is its own card with its own session and owner agent, and records its parent. Once every child card has closed, the parent card's session is resumed with each child's title, owner, state and result.
 - **Blockers.** A card started with `blockedBy`, a list of card IDs, waits until all of them settle: done with a conclusion, or stopped. A blocker that closes with a question for the owner still holds its dependents until the owner's reply reopens it and it closes with a conclusion. The blocked card's first turn is held in the queue until then, and when it starts its request includes each blocker's result. Only existing cards can block, so blockers can't form a loop. Child cards settle the same way before their parent is resumed.
-- **Asks.** An agent can ask another agent a question about its card with `task ask {id, agent, question}`. The asked agent answers in its own session, with its own tools and instructions, through `task answer {id, answer}`, and can't start, change or close cards from there. The asking card is resumed with the answer. Each card allows one ask per agent and 3 back-and-forths on it; the 4th question is refused and the ask is flagged for the PM. If the asked agent's turn ends without answering, the next question to that agent records the earlier one as unanswered, counts it toward the 3 and flags the ask.
+- **Asks.** An agent can ask another agent a question about its card with `task ask {id, agent, question}`. The asked agent answers in its own session, with its own tools and instructions, through `task answer {id, answer}`, and can't start, change or close cards from there. The asking card is resumed with the answer. Each card allows one ask per agent and 3 back-and-forths on it; the 4th question is refused and the ask is flagged for the PM, which can make the call. If the asked agent's turn ends without answering, the next question to that agent records the earlier one as unanswered, counts it toward the 3 and flags the ask.
 
 ## Brainstorms
 
@@ -109,5 +110,30 @@ Each participant runs with its own agent's instructions, tools and required skil
 ## Agent time
 
 Each card's agent time and waiting-on-owner time are worked out separately from its turns and turn events, against its estimate in agent minutes. Agent time is how long the card's turns, and the turns answering its asks, worked, up to the moment a turn stopped to wait for the owner. Waiting time runs from that moment, or from the moment the card closed with a question, until the next turn of the card starts, or until now while the owner hasn't answered. Time a card spends held by its blockers counts as neither.
+
+## The PM
+
+Every 30 minutes, while agents are on, code scans every open card without a model request. It flags a card when:
+
+- its agent time passes twice its estimate, and again at four times, six times and so on;
+- it asks the same question twice, to another agent or to the owner;
+- one of its asks used its 3 back-and-forths or went unanswered;
+- its last 12 tool calls include 4 calls to the same tool with the same input;
+- the model spend of its turns and of the turns answering its asks passes its `budget.cardUsd`;
+- it is still open 15 minutes after its last turn ended, with nothing queued, no open child cards, no ask being answered and no planned check, because a final reply alone doesn't close a card.
+
+Each flag is recorded in the card's activity and isn't raised again until the problem gets worse or comes back, unless the PM turn it was sent to failed or was stopped before the PM acted on the card, in which case the next scan raises it again. When nothing new is flagged, nothing else happens. Otherwise one PM turn starts in its own background session, with the flagged cards, their flags and their asks. A new PM turn doesn't start while the last one is still queued or running.
+
+The PM runs as the `pm` agent from `agents/core/pm.md`. Whatever its config lists, its only tool is `task`, and in its session only `task list` and these actions work, each only on a card its board check flagged:
+
+| Action                                                                   | What it does                                                                                                                    |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `nudge {id, message}`                                                    | Resumes the card's owner agent with the PM's direction.                                                                         |
+| `split {id, cards: [{agent, title, doneWhen, estimateMinutes}], reason}` | Resumes the owner agent with the child cards to start; the agent starts them, since a card starts from its own turn.            |
+| `reassign {id, agent, reason}`                                           | Gives the card to another agent, which continues it on the card's next turn.                                                    |
+| `decide {ask, decision}`                                                 | Makes the call on a stuck ask: the asked agent's unfinished answer is stopped and the asking card is resumed with the decision. |
+| `escalate {id, question}`                                                | Posts the PM's question about the card in the main chat as a notice; the owner answers through the Router or the card.          |
+
+A blocked card can't be nudged or split until its blockers close. Every action is saved in the card's activity, in the `agent_card_activity` table, with the PM's reason; `cards.read` returns it with the card. The PM can't own, ask on or do a card's work, and the Router never routes work to it. If `pm.md` is missing or invalid, the PM still runs with the same tool and rules.
 
 The code is in `src/server/agents/`. Each upstream file it hooks into is recorded in an ADR in `docs/adr/`.

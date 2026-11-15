@@ -62,6 +62,7 @@ export type AgentRegistry = {
 };
 
 export const routerAgent = 'router';
+export const pmAgent = 'pm';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -164,8 +165,13 @@ const brainstormRules = `This is a brainstorm card. Its rounds are fixed: call b
 const participantRules =
   "You're taking part in a brainstorm on another agent's card. Answer only the round you're given, from your own role, and keep to what the round asks. You can't start, change or close cards.";
 
+const pmRules = (owners: string) =>
+  `You are the PM. You keep cards on track and never do a card's work: your only tool is task, and only these actions work:\n- task list: read the board.\n- task nudge {id, message}: resume the card's owner agent with your direction.\n- task split {id, cards: [{agent, title, doneWhen, estimateMinutes}], reason}: have the owner agent split its card into these child cards.\n- task reassign {id, agent, reason}: give the card to another agent, who continues it.\n- task decide {ask, decision}: make the call on a stuck ask; the asking card continues with your decision.\n- task escalate {id, question}: put one question to the owner in the main chat, only when no agent can decide.\nAct only on the cards the board scan flagged, pick the smallest action that unsticks each one, and end your turn when every flagged card has one. Every action is recorded on the card. Estimates are in agent minutes. Agents that can own a card: ${owners}.`;
+
 export function cardOwners(registry: AgentRegistry) {
-  return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+  return [...registry.agents.values()].filter(
+    (agent) => agent.name !== routerAgent && agent.name !== pmAgent,
+  );
 }
 
 function roster(registry: AgentRegistry) {
@@ -192,9 +198,23 @@ export function bindAgent(
   registry: AgentRegistry,
   context: BindingContext,
   cardAgent?: string,
-  role: 'owner' | 'asked' = 'owner',
+  role: 'owner' | 'asked' | 'pm' = 'owner',
 ): { agent?: NonNullable<RuntimeContext['agent']> } {
   if (context.proactivity) return {};
+  if (role === 'pm') {
+    const config = registry.agents.get(pmAgent);
+    const owners = cardOwners(registry)
+      .map((agent) => `${agent.name} (${agent.title}: ${agent.role})`)
+      .join(', ');
+    return {
+      agent: {
+        name: pmAgent,
+        title: config?.title ?? 'PM',
+        tools: ['task'],
+        instructions: `${config?.instructions ?? 'The PM config in agents/core/pm.md is missing or invalid, so you run with the built-in PM rules only.'}\n\n${pmRules(owners || 'none yet')}`,
+      },
+    };
+  }
   if (context.sessionId === context.threadId) {
     const { name, title, tools, instructions } = registry.agents.get(routerAgent) ?? fallbackRouter;
     return {
@@ -248,12 +268,14 @@ export function createAgentBinding(options: {
     sessionId: string,
     client: string | null,
   ) => Promise<{ sessionTurns: ReadonlySet<string>; clientCards: ReadonlySet<string> }>;
+  pmSession?: (sessionId: string) => Promise<boolean>;
   root?: string;
   skills?: AgentSkillSources;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
   if (!root)
     return {
+      enabled: false,
       registry: async () => undefined,
       bind: async (_context: BindingContext): Promise<ReturnType<typeof bindAgent>> => ({}),
       participant: async (_name: string): Promise<BrainstormParticipant | undefined> => undefined,
@@ -273,12 +295,15 @@ export function createAgentBinding(options: {
   };
   void load();
   return {
+    enabled: true,
     registry: async () => (await load()).registry,
     bind: async (
       context: WallContext & Partial<Pick<RuntimeContext, 'emit'>>,
     ): Promise<Partial<RuntimeContext>> => {
       if (context.proactivity) return {};
       const chat = context.sessionId === context.threadId;
+      if (!chat && (await options.pmSession?.(context.sessionId)))
+        return bindAgent((await load()).registry, context, pmAgent, 'pm');
       const card = chat ? undefined : await options.card(context.sessionId);
       if (!chat && !card) return {};
       const { registry, skills } = await load();
@@ -316,7 +341,7 @@ export function createAgentBinding(options: {
     participant: async (name: string): Promise<BrainstormParticipant | undefined> => {
       const { registry, skills } = await load();
       const config = registry.agents.get(name);
-      if (!config || name === routerAgent) return undefined;
+      if (!config || name === routerAgent || name === pmAgent) return undefined;
       const names = requiredSkills(config, brainstormCard);
       return {
         name,

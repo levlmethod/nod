@@ -44,9 +44,9 @@ export type CardHooks = {
   closed(client: PoolClient): Promise<void>;
 };
 
-type Exchange = { question: string; answer?: string; unanswered?: boolean };
+export type Exchange = { question: string; answer?: string; unanswered?: boolean };
 
-const unsettled = (task: string) =>
+export const unsettled = (task: string) =>
   `(${task}.state='open' OR (${task}.state='done' AND EXISTS(SELECT 1 FROM agent_cards q
     WHERE q.task_id=${task}.id AND q.owner_id=${task}.owner_id AND q.result ? 'question')))`;
 
@@ -90,16 +90,20 @@ export function createCards(options: {
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (owner_id, task_id, to_agent)
       );
-      CREATE TABLE IF NOT EXISTS agent_card_actions (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      CREATE TABLE IF NOT EXISTS agent_card_activity (
+        id uuid PRIMARY KEY,
         owner_id text NOT NULL,
         task_id uuid NOT NULL REFERENCES tasks(id),
         actor text NOT NULL,
         action text NOT NULL,
-        reason text NOT NULL,
+        detail text NOT NULL,
+        flag_key text,
         created_at timestamptz NOT NULL DEFAULT now()
       );
-      CREATE INDEX IF NOT EXISTS agent_card_actions_task ON agent_card_actions(owner_id,task_id,created_at);
+      ALTER TABLE agent_card_activity ADD COLUMN IF NOT EXISTS run_id uuid;
+      CREATE INDEX IF NOT EXISTS agent_card_activity_task ON agent_card_activity(owner_id,task_id,created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_card_activity_flag ON agent_card_activity(owner_id,task_id,flag_key)
+        WHERE flag_key IS NOT NULL;
       CREATE TABLE IF NOT EXISTS agent_brainstorms (
         task_id uuid PRIMARY KEY REFERENCES tasks(id),
         owner_id text NOT NULL,
@@ -700,7 +704,9 @@ export function createCards(options: {
              FROM (SELECT u.owner_id,u.session_id,${waitStarted('u')} AS at FROM turns u
                WHERE u.owner_id=c.owner_id AND u.session_id=t.session_id) w WHERE w.at IS NOT NULL),0) AS waiting_seconds,
            COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'agent',a.to_agent,'exchanges',a.exchanges,'flagged',a.flagged_at IS NOT NULL) ORDER BY a.created_at)
-             FROM agent_card_asks a WHERE a.owner_id=c.owner_id AND a.task_id=c.task_id),'[]') AS asks
+             FROM agent_card_asks a WHERE a.owner_id=c.owner_id AND a.task_id=c.task_id),'[]') AS asks,
+           COALESCE((SELECT jsonb_agg(jsonb_build_object('actor',v.actor,'action',v.action,'detail',v.detail,'at',v.created_at) ORDER BY v.created_at,v.id)
+             FROM agent_card_activity v WHERE v.owner_id=c.owner_id AND v.task_id=c.task_id),'[]') AS activity
          FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
          WHERE c.owner_id=$1 AND ($2::uuid[] IS NULL OR c.task_id=ANY($2::uuid[]))
          ORDER BY c.created_at,c.task_id`,
@@ -728,24 +734,40 @@ export function createCards(options: {
         pending: ask.exchanges.some((exchange) => exchange.answer === undefined),
         flagged: ask.flagged || ask.exchanges.some((exchange) => exchange.unanswered),
       })),
+      activity: row.activity,
     }));
   }
 
-  async function recordAction(
-    action: { taskId: string; actor: string; action: string; reason: string },
-    client: Pick<PoolClient, 'query'> = pool,
+  async function record(
+    client: PoolClient,
+    taskId: string,
+    entry: { actor: string; action: string; detail: string; flagKey?: string; runId?: string },
   ) {
-    const { rowCount } = await client.query(
-      `INSERT INTO agent_card_actions(owner_id,task_id,actor,action,reason)
-       SELECT owner_id,task_id,$3,$4,$5 FROM agent_cards WHERE owner_id=$1 AND task_id=$2`,
-      [ownerId, action.taskId, action.actor, action.action, action.reason],
+    return Boolean(
+      (
+        await client.query(
+          `INSERT INTO agent_card_activity(id,owner_id,task_id,actor,action,detail,flag_key,run_id)
+           VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (owner_id,task_id,flag_key) WHERE flag_key IS NOT NULL
+           DO UPDATE SET run_id=EXCLUDED.run_id,detail=EXCLUDED.detail,created_at=now()`,
+          [
+            ownerId,
+            taskId,
+            entry.actor,
+            entry.action,
+            entry.detail,
+            entry.flagKey ?? null,
+            entry.runId ?? null,
+          ],
+        )
+      ).rowCount,
     );
-    if (!rowCount) throw cardRefusal(`${action.taskId} is not a card, so no action was recorded.`);
   }
 
   return {
     initialize,
-    recordAction,
+    record,
+    latestTurn,
     hooks: { start, finish, closed } satisfies CardHooks,
     cardFor,
     wallRecords,

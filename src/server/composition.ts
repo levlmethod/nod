@@ -131,6 +131,7 @@ import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createBoard } from './agents/board.ts';
 import { createClientBudget } from './agents/client-budget.ts';
+import { createPm } from './agents/pm.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -903,8 +904,10 @@ async function initializeApplication(
     namespaces: (servers) => mcpNamespaces(servers).map(({ namespace }) => namespace),
     card: cards.cardFor,
     wallRecords: cards.wallRecords,
+    pmSession: (sessionId) => pm.isPmSession(sessionId),
     skills: { library: skillLibrary },
   });
+  const pm = createPm({ pool, ownerId, registry: () => agents.registry(), cards });
   const clientBudget = createClientBudget({ pool, ownerId, registry: () => agents.registry() });
   const analyzeImages =
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
@@ -949,6 +952,10 @@ async function initializeApplication(
         },
       );
       if (event.type === 'tool_end') captureAnalytics(toolUsed(event));
+      if (event.type === 'tool_start' && agents.enabled)
+        void pm
+          .recordCall(turnId, name, event.input)
+          .catch((error) => logFailure('agent_card_call', error));
       adapters.observe?.(turnId, event);
     },
   });
@@ -1147,6 +1154,7 @@ async function initializeApplication(
   await tasks.initialize();
   await cards.initialize();
   await clientBudget.initialize();
+  await pm.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -2096,6 +2104,7 @@ async function initializeApplication(
       consumers,
       run: () => analytics.withSystemWork(ownerId, 'memory_learning', learning.run),
     });
+    if (agents.enabled) await pm.start({ boss, consumers });
     await startThreadWorkers({
       present: communication.present,
       taskChecks: tasks.resumeDue,
@@ -2197,6 +2206,8 @@ async function initializeApplication(
       },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
+        const pmResult = agents.enabled ? await pm.act(turn, raw) : undefined;
+        if (pmResult !== undefined) return pmResult;
         const handled = await cards.act(turn, raw);
         if (handled !== undefined) return handled;
         const request = raw as { action?: unknown; model?: unknown } | undefined;
