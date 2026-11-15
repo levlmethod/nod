@@ -41,8 +41,8 @@ RKMD's brand guide and goals.
 | `title`       | Yes      | The client's display name.                                                                                                                             |
 | `budget`      | Yes      | `monthlyUsd`, the most the client's cards may spend on models in a calendar month.                                                                     |
 | `connections` | No       | The connected accounts the client's cards may use. Each entry names the app or MCP server by `service` and the signed-in `account`, as listed in Apps. |
-| `dataSources` | No       | The sources the client's watchers check. Not used yet.                                                                                                 |
-| `thresholds`  | No       | Alert thresholds per metric for the watchers. Not used yet.                                                                                            |
+| `dataSources` | No       | The sources the client's data comes from, for reference. Watchers read what `thresholds` names.                                                        |
+| `thresholds`  | No       | The metric checks the hourly watchers run, by name. See [Watchers](/how-it-works/watchers/).                                                           |
 | `inboxes`     | No       | Email inboxes whose mail belongs to the client. Not used yet.                                                                                          |
 
 A file with no frontmatter, an unknown or missing field, or a budget that isn't above zero is skipped and logged as `agent_config_rejected` with its path and reason. The `clients` folder is not a team, so it needs no `team.md`.

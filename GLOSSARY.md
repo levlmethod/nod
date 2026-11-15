@@ -33,7 +33,7 @@ _Avoid_: Project manager bot, supervisor
 The agent that writes the owner's morning digest.
 
 **Watcher**:
-An agent that checks a client's data sources on a schedule and opens a card when it finds an anomaly.
+The hourly check, in code with no model, of a client's thresholds against its data sources. It opens an investigation card for the threshold's agent when it finds an anomaly.
 _Avoid_: Monitor, observer
 
 ### Clients
