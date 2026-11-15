@@ -137,7 +137,7 @@ function threadRecords(
 const toolMail = (value: unknown) =>
   threadRecords(value).flatMap((record) => message(record) ?? []);
 
-function listedOnly(values: unknown[]) {
+function threadsListedById(values: unknown[]) {
   const newest = new Map<string, string>();
   for (const record of values.flatMap((value) => threadRecords(value))) {
     const thread = field(record, ['threadId', 'thread_id']);
@@ -191,6 +191,26 @@ export function createInbox(options: {
     `);
   }
 
+  async function untriaged<T extends { threadId: string; messageId: string }>(
+    inbox: Inbox,
+    items: T[],
+  ) {
+    const seen = (
+      await pool.query<{ thread_id: string; message_id: string; state: string; attempts: number }>(
+        `SELECT thread_id,message_id,state,attempts FROM inbox_triage
+         WHERE owner_id=$1 AND inbox=$2 AND thread_id=ANY($3::text[])`,
+        [ownerId, inbox.address, items.map((item) => item.threadId)],
+      )
+    ).rows;
+    return items.filter((item) => {
+      const row = seen.find((entry) => entry.thread_id === item.threadId);
+      if (!row) return true;
+      if (row.state === 'card') return false;
+      if (row.message_id !== item.messageId) return true;
+      return row.state === 'failed' && row.attempts < attempts;
+    });
+  }
+
   async function mailFor(inbox: Inbox, accounts: Account[], signal: AbortSignal) {
     if (!inbox.tool) {
       const account = accounts.find(
@@ -235,7 +255,7 @@ export function createInbox(options: {
         `No connected account is named ${connection}, so ${inbox.address} can't be read.`,
       );
     const sourceId = `connections:${account.connectionId}`;
-    const find = async (wanted: string) => {
+    const toolNamed = async (wanted: string) => {
       const catalog = await options.read({ sourceId, query: wanted }, signal);
       const tools = catalog.records.flatMap(
         (record) => (record.data.tools ?? []) as Array<{ name?: unknown }>,
@@ -248,33 +268,23 @@ export function createInbox(options: {
       if (!tool) throw new Error(`${connection} has no read tool named ${wanted}.`);
       return tool;
     };
-    const tool = await find(name);
+    const tool = await toolNamed(name);
     const results = (await options.read({ sourceId, tool, args }, signal)).records.map(
       (record) => record.data.result,
     );
     const mail = results.flatMap((value) => toolMail(value));
     if (!inbox.tool.read) return mail;
     const known = new Set(mail.map((item) => item.threadId));
-    const listed = listedOnly(results).filter((item) => !known.has(item.threadId));
+    const listed = threadsListedById(results).filter((item) => !known.has(item.threadId));
     if (!listed.length) return mail;
-    const seen = (
-      await pool.query<{ thread_id: string; message_id: string; state: string; attempts: number }>(
-        `SELECT thread_id,message_id,state,attempts FROM inbox_triage
-         WHERE owner_id=$1 AND inbox=$2 AND thread_id=ANY($3::text[])`,
-        [ownerId, inbox.address, listed.map((item) => item.threadId)],
+    const unread = (
+      await untriaged(
+        inbox,
+        listed.map((item) => ({ ...item, messageId: item.id })),
       )
-    ).rows;
-    const unread = listed
-      .filter((item) => {
-        const row = seen.find((entry) => entry.thread_id === item.threadId);
-        if (!row) return true;
-        if (row.state === 'card') return false;
-        if (row.message_id !== item.id) return true;
-        return row.state === 'failed' && row.attempts < attempts;
-      })
-      .slice(0, perInbox);
+    ).slice(0, perInbox);
     if (!unread.length) return mail;
-    const reader = await find(inbox.tool.read);
+    const reader = await toolNamed(inbox.tool.read);
     for (const item of unread) {
       signal.throwIfAborted();
       const read = await options.read({ sourceId, tool: reader, args: { id: item.id } }, signal);
@@ -418,27 +428,9 @@ export function createInbox(options: {
         const current = latest.get(item.threadId);
         if (!current || time(item) >= time(current)) latest.set(item.threadId, item);
       }
-      const seen = (
-        await pool.query<{
-          thread_id: string;
-          message_id: string;
-          state: string;
-          attempts: number;
-        }>(
-          `SELECT thread_id,message_id,state,attempts FROM inbox_triage
-           WHERE owner_id=$1 AND inbox=$2 AND thread_id=ANY($3::text[])`,
-          [ownerId, inbox.address, [...latest.keys()]],
-        )
-      ).rows;
-      const pending = [...latest.values()]
-        .filter((item) => {
-          const row = seen.find((entry) => entry.thread_id === item.threadId);
-          if (!row) return true;
-          if (row.state === 'card') return false;
-          if (row.message_id !== item.messageId) return true;
-          return row.state === 'failed' && row.attempts < attempts;
-        })
-        .sort((left, right) => time(left) - time(right));
+      const pending = (await untriaged(inbox, [...latest.values()])).sort(
+        (left, right) => time(left) - time(right),
+      );
       const fresh = pending.slice(0, perInbox);
       for (const item of fresh) {
         signal.throwIfAborted();

@@ -23,9 +23,14 @@ agents/
 │   ├── team.md
 │   ├── growth-lead.md
 │   └── paid-media-analyst.md
+├── creative/
+│   ├── team.md
+│   └── creative-lead.md
 └── clients/
     └── rkmd.md
 ```
+
+The tree shows a few files of each folder. [The shipped roster](#the-shipped-roster) lists every agent.
 
 Every team folder has a `team.md` file. Its frontmatter names the team's `lead`, which must be an agent in the same folder, and a `routing` description that says what work the team takes:
 
@@ -67,7 +72,7 @@ Nod reads the folder again at the start of every turn, so an edit takes effect o
 
 ## The shipped roster
 
-The repository ships the agency's Phase 1 roster. Edit or add files to change it.
+The repository ships with the agency's agents in three teams. Edit or add files to change it.
 
 | Team       | Agent                  | Owns                                                                                         |
 | ---------- | ---------------------- | -------------------------------------------------------------------------------------------- |

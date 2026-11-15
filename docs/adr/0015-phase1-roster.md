@@ -17,4 +17,10 @@ None.
 
 A wildcard such as `mcp__krowdit__*` in an agent's tools was rejected: it needs a change to upstream's tool filter, and it would hand every agent the server's send and refund tools.
 
-The Krowdit server serves Formulaic's data under generic names (`growth_*`), so listing it on more than one client would let one client's cards read Formulaic's data. Only Formulaic lists it for now. Splitting the server per client is left to the owner.
+The Krowdit server serves Formulaic's data under generic names (`growth_*`), so listing it on more than one client would let one client's cards read Formulaic's data. Only Formulaic lists it for now, so the creative tools on it (images, video, ad library) work only on Formulaic's cards. Splitting the server per client is left to the owner.
+
+## Known gaps
+
+- GA4 and Meta leave out days with no activity, so a fall to zero shows up as a missing day rather than a drop, and the drop checks miss it.
+- The Stripe check counts failed charges among the last 100, since the Krowdit tool has no date filter.
+- Krowdit and RKMD's GA4 have no tools, so they have no watchers yet.
