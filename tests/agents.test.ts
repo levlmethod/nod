@@ -620,7 +620,7 @@ Investigate metric changes with evidence.
       root,
       skills: { root: join(root, 'no-skills'), library: builtInSkills },
     });
-    const registry = await binding.registry();
+    const registry = (await binding.registry())!;
     assert.ok(registry.agents.has('growth-lead'));
     assert.ok(!registry.agents.has('growth-analyst'));
     assert.deepEqual(
