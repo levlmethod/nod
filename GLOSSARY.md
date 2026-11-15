@@ -46,6 +46,10 @@ _Avoid_: Customer, brand, account
 The rule that work for one client can see only that client's memory, connections and browser profiles.
 _Avoid_: Sandbox, tenant
 
+**Profile**:
+A saved, signed-in browser profile that belongs to one agent and one client. Only that agent's cards for that client can open it.
+_Avoid_: Browser session, cookie jar
+
 ### Work
 
 **Card**:

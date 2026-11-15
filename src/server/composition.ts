@@ -130,6 +130,7 @@ import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createClientBudget } from './agents/client-budget.ts';
+import { createAgentBrowserProfiles } from './agents/browser-profiles.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -888,7 +889,9 @@ async function initializeApplication(
   };
   const mailCheck = createMailCheck({ curator, decisions });
   const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
+  const agentBrowsers = createAgentBrowserProfiles({ pool, ownerId });
   const agents = createAgentBinding({
+    browserProfiles: agentBrowsers.owned,
     knownTools: Object.keys(toolDefinitions),
     namespaces: (servers) => mcpNamespaces(servers).map(({ namespace }) => namespace),
     card: cards.cardFor,
@@ -1139,6 +1142,7 @@ async function initializeApplication(
   });
   await tasks.initialize();
   await cards.initialize();
+  await agentBrowsers.initialize();
   await clientBudget.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
@@ -2324,7 +2328,7 @@ async function initializeApplication(
           ? result
           : { result };
       },
-      browserConnection: async (request, turn, signal, launch) => {
+      browserConnection: agentBrowsers.browserConnection(async (request, turn, signal, launch) => {
         const target = await browserConnections.target(request);
         if (!target)
           return browserConnections.request(request, turn, signal, launch).catch(async (error) => {
@@ -2351,7 +2355,7 @@ async function initializeApplication(
             ...(access.basis ? { basis: access.basis } : {}),
           });
         return result;
-      },
+      }),
       speech,
       audioReplies: async () => (await speechPreferences.get()).speechReply,
       manage: async (turn, action, args, { admit, ...provenance }) => {
@@ -2513,6 +2517,7 @@ async function initializeApplication(
         return result;
       },
       requestCredential: async (turn, input) => {
+        const walled = await agentBrowsers.signIn(turn, input);
         if (input.kind === 'method') {
           const origin = credentialOrigin(input.origin);
           const access = await permitVault(turn, { origin, kind: 'sign_in' });
@@ -2526,7 +2531,7 @@ async function initializeApplication(
         }
         const { savedLoginId, ...request } = input;
         const origin = credentialOrigin(request.origin);
-        if (request.kind === 'otp' && !request.emailCode) {
+        if (request.kind === 'otp' && !request.emailCode && !walled) {
           const login = await vault.authenticatorLogin(turn, ownerId, origin, savedLoginId);
           if (login) {
             const access = await permitVault(turn, {
@@ -2549,7 +2554,9 @@ async function initializeApplication(
             }
           }
         }
-        const saved = (await vault.list(ownerId)).filter((entry) => entry.origin === origin);
+        const saved = walled
+          ? []
+          : (await vault.list(ownerId)).filter((entry) => entry.origin === origin);
         const chosen =
           savedLoginId !== undefined
             ? saved.find((entry) => entry.id === savedLoginId)

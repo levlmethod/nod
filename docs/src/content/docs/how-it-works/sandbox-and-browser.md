@@ -18,7 +18,7 @@ flowchart LR
     sandbox[Sandbox user<br/>runs Pi commands]
     cli[One user per CLI<br/>one CLI token each]
   end
-  browser[Browser container<br/>Chromium · profiles]:::muted
+  browser[Browser container<br/>Chrome or Chromium · profiles]:::muted
   net([Internet])
   server -- supervised commands --> sandbox
   server -- sealed CLI run --> cli
@@ -89,9 +89,11 @@ The CLI then runs with an environment built from scratch: a fixed `PATH`, a priv
 
 The browser is a separate trusted container. It doesn't share mounts or a network namespace with the workspace. The server drives Vercel Labs [agent-browser](https://github.com/vercel-labs/agent-browser) over a fixed stdin bridge to a private Unix socket.
 
+On Linux x64 the image installs Google Chrome stable, because many websites flag Chromium as a bot, and the browser runs it. Google ships no Chrome for Linux on other architectures, so there the image installs Chromium. When the worker starts, it logs a `browser_product` line naming the browser it runs and, for Chromium, the reason. An x64 image without Chrome, such as one built before this change, also runs Chromium, and the reason says to rebuild the image.
+
 | Setting    | Value                                                                   |
 | ---------- | ----------------------------------------------------------------------- |
-| Display    | Headed Chromium on a private 1920x1080 virtual display per session      |
+| Display    | Headed Chrome or Chromium on a private 1920x1080 virtual display        |
 | Viewport   | 1440x900, with Noto fonts and software WebGL                            |
 | Time zone  | The owner's saved IANA time zone, or UTC when unknown or invalid        |
 | Language   | The owner's formatting locale, such as en-GB, sent as `Accept-Language` |
@@ -101,7 +103,7 @@ Pi reads the page from agent-browser's accessibility snapshot, with `@eN` refere
 
 Every browser command has a deadline: 60 seconds, or a wait's own timeout plus 30 seconds. That leaves room for agent-browser's own 30-second limit on each browser call, so only a browser that has stopped answering misses it. A browser that misses its deadline, is interrupted or doesn't close within 5 seconds is killed with all its Chromium processes. A cancelled action requires an explicit open or saved-session selection before that browser can continue. Once cancellation is acknowledged, other sessions keep their browsers and can continue. A lost bridge response still requires recovery of the application namespace because the worker may have closed it. Nod never repeats the interrupted action during recovery. While a dialog is open, the observation is the dialog, and every action except open is refused until Pi accepts or dismisses it.
 
-Known secret values (passwords, codes, card numbers and security codes) are removed from tool output and masked in screenshots; usernames and the cardholder name aren't secrets and stay visible. URL parameters that carry credentials, such as tokens and signatures, are hidden; other query parameters stay. When an action fails, Pi sees the browser's own error with known secrets removed. Pi uses saved profiles through `browser_session` and never reads their files. The code is in [`src/providers/agent-browser/`](https://github.com/n8n-io/nod/tree/main/src/providers/agent-browser).
+Known secret values (passwords, codes, card numbers and security codes) are removed from tool output and masked in screenshots; usernames and the cardholder name aren't secrets and stay visible. URL parameters that carry credentials, such as tokens and signatures, are hidden; other query parameters stay. When an action fails, Pi sees the browser's own error with known secrets removed. Pi uses saved profiles through `browser_session` and never reads their files. With [agents](/how-it-works/agents-and-teams/) on, each saved profile a card makes belongs to that card's agent and client, and no other card can open it; see [Clients and walls](/how-it-works/clients-and-walls/#browser-profiles). The code is in [`src/providers/agent-browser/`](https://github.com/n8n-io/nod/tree/main/src/providers/agent-browser).
 
 ## Browser handoff
 

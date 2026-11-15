@@ -60,9 +60,23 @@ Every turn of a card's session runs behind its client's wall:
 - **Memory and chat.** The owner's saved memory, related conversation and history search are shared across every client, so a card gets none of them: no memory index, no memory preparation, no related messages, and `manage_personal_context` is refused with the reason. The card's recent conversation holds only its own session's messages, not the main chat or other cards.
 - **Learned procedures.** Learned skills are shared across clients, so a card isn't shown them and can't read, save or patch one. Task guides still work.
 - **Cards.** The task ledger in the card's context lists only cards for the same client, and `task list` is refused.
-- **Owner-wide tools.** `manage_apps`, `sign_in`, `browser_session`, `pay` and `files` reach the owner's accounts, saved logins, cards and computer across every client, so a card can't use them.
+- **Owner-wide tools.** `manage_apps`, `pay` and `files` reach the owner's accounts, cards and computer across every client, so a card can't use them.
+- **Browser profiles.** A card opens only the saved browser profiles its own agent made for its own client, as described below.
 
-A card whose client file is missing or invalid can use no connections and is told to close with one question asking the owner to fix the client file. Browser profiles per agent and client, which will let a card sign in again, come with real Chrome in a later change.
+A card whose client file is missing or invalid can use no connections and is told to close with one question asking the owner to fix the client file.
+
+## Browser profiles
+
+Each agent keeps its own signed-in browser profiles for each client, so the Ads Buyer stays signed in to RKMD's ad accounts and a different profile holds Formulaic's. A profile is one of Nod's saved browser sessions, kept in the browser container under its own profile folder.
+
+- **Making one.** `browser_session connect` from a card makes a profile owned by the card's agent and client and labels it `<client> · <agent>: <site>`, so the Vault shows whose it is. The card signs in with `sign_in` and keeps it with `browser_session save`.
+- **Using one.** A card's context lists its own agent's saved profiles for its client. `browser_session use` opens one of those; any other profile, including the owner's own and another agent's or client's, is refused with the agent and client it belongs to.
+- **Signing in.** A card can use `sign_in` only while its browser has one of its own profiles open, so the session stays in that profile. Saved logins and email codes come from the owner's Vault and mailbox, which hold every client's accounts, so a card can't use `savedLoginId` or `emailCode`, and Nod doesn't fill a saved login or authenticator code for it. The owner enters the sign-in privately once, and the profile keeps it. Every sign-in and saved-session use still goes through the trust check.
+- **Owner access.** The main chat and plain tasks aren't behind a wall and can open any profile. The owner removes a profile from the Vault as usual.
+
+Card agents still run without the workspace or Pi's web search. An agent with `browser` reaches public pages through the browser, which is enough for signed-in dashboards and site research, so browser agents get no separate web tool.
+
+The code is in `src/server/agents/browser-profiles.ts`. The upstream files it hooks into are listed in `docs/adr/0004-agent-browser-profiles.md`.
 
 The main chat, where the Router runs, is not behind a wall: it sees the owner's memory and every client, because it only routes work.
 

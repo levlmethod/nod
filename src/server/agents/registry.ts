@@ -222,6 +222,7 @@ export function createAgentBinding(options: {
     sessionId: string,
     client: string | null,
   ) => Promise<{ sessionTurns: ReadonlySet<string>; clientCards: ReadonlySet<string> }>;
+  browserProfiles?: (agent: string, client: string | null) => Promise<ReadonlySet<string>>;
   root?: string;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
@@ -258,6 +259,9 @@ export function createAgentBinding(options: {
           clients: registry.clients,
           namespaces: options.namespaces,
           ...(await options.wallRecords(context.sessionId, card.client)),
+          ...(options.browserProfiles
+            ? { browserProfiles: await options.browserProfiles(card.agent, card.client) }
+            : {}),
         },
       );
     },
