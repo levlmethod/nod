@@ -8,7 +8,6 @@ The card row is written in the same transaction as the task, before its first tu
 
 - `src/server/tasks.ts`: the `task` input accepts the card fields; `finish.result` becomes optional; an optional `cards` hook runs after a task row is inserted and decides the stored result on `finish`.
 - `src/runtime/tools.ts`: the `task` tool schema gains the same optional card fields, and `finish.result` becomes optional.
-- `src/runtime/index.ts`: an agent session stays `restricted` unless its tools include `workspace`.
 - `src/server/composition.ts`: creates the card service, passes its hooks to tasks, binds a card's owner agent per turn, and skips upstream's auto-close on a final reply for cards.
 
 ## Considered options

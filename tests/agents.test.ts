@@ -363,6 +363,19 @@ routing: Owns client growth metrics, traffic and conversion questions.
       assert.deepEqual(bound?.tools, ['browser', 'apps', 'send_message', 'task']);
       assert.match(bound?.instructions ?? '', /Investigate metric changes with evidence\./);
       assert.match(bound?.instructions ?? '', /conclusion, evidence/);
+      const binding = createAgentBinding({
+        knownTools: [],
+        cardAgent: cards.agentFor,
+        root,
+      });
+      assert.equal(
+        (await binding.bind({ threadId: turn.threadId, sessionId: task.id })).agent?.name,
+        'growth-analyst',
+      );
+      assert.equal(
+        (await binding.bind({ threadId: turn.threadId, sessionId: randomUUID() })).agent,
+        undefined,
+      );
       const work = await cardTurn(task.id);
       assert.equal(await cards.isCardTurn(work.turnId), true);
       assert.equal(await cards.isCardTurn(turn.turnId), false);
@@ -447,27 +460,3 @@ routing: Owns client growth metrics, traffic and conversion questions.
     });
   },
 );
-
-test('a card agent that lists workspace keeps the Linux workspace and web tools', async () => {
-  const root = await configRoot({
-    'core/team.md': team('router'),
-    'core/router.md': agentFile(['task', 'ask_user']),
-    'core/builder.md': agentFile(['task', 'workspace']),
-  });
-  try {
-    const registry = await loadAgentRegistry(root, ['task', 'ask_user']);
-    assert.deepEqual(registry.problems, []);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-  let checked = false;
-  await runAs(
-    { name: 'builder', title: 'Builder', tools: ['task', 'workspace'], instructions: 'Build.' },
-    async (tools, options) => {
-      assert.deepEqual([...tools.keys()], ['task']);
-      assert.notEqual(options.restricted, true);
-      checked = true;
-    },
-  );
-  assert.ok(checked);
-});

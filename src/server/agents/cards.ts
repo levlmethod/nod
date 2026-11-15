@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
-import { cardResult, cardResultText } from '../../shared/cards.ts';
-import { routerAgent, type AgentRegistry } from './registry.ts';
+import { cardRefusal, cardResult, cardResultText } from '../../shared/cards.ts';
+import { cardOwners, type AgentRegistry } from './registry.ts';
 
 type StartRequest = { agent?: string; cardType?: string; estimateMinutes?: number };
 type FinishRequest = { result?: string; card?: unknown; question?: string };
@@ -32,7 +32,6 @@ export function createCards(options: {
         result jsonb,
         created_at timestamptz NOT NULL DEFAULT now()
       );
-      CREATE INDEX IF NOT EXISTS agent_cards_owner ON agent_cards(owner_id,agent);
     `);
   }
 
@@ -40,25 +39,27 @@ export function createCards(options: {
     const named = request.agent ?? request.cardType ?? request.estimateMinutes;
     if (!chat) {
       if (named !== undefined)
-        throw new Error('Only the Router starts cards. Start this as a plain task.');
+        throw cardRefusal('Only the Router starts cards. Start this as a plain task.');
       return;
     }
     const registry = await options.registry();
-    const owners = [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+    const owners = cardOwners(registry);
     const names = owners.map((agent) => agent.name).join(', ');
     if (!owners.length)
-      throw new Error(
+      throw cardRefusal(
         'No agent can own a card yet. Add an agent config under agents/ before starting cards.',
       );
     if (!request.agent)
-      throw new Error(`A card needs one owner agent. Name it with agent, one of: ${names}.`);
+      throw cardRefusal(`A card needs one owner agent. Name it with agent, one of: ${names}.`);
     const owner = owners.find((agent) => agent.name === request.agent);
     if (!owner)
-      throw new Error(
+      throw cardRefusal(
         `${request.agent} is not an agent that can own a card. Use one of: ${names}.`,
       );
     if (!request.estimateMinutes)
-      throw new Error('A card needs estimateMinutes: how many agent minutes the work should take.');
+      throw cardRefusal(
+        'A card needs estimateMinutes: how many agent minutes the work should take.',
+      );
     await client.query(
       `INSERT INTO agent_cards(task_id,owner_id,agent,card_type,estimate_minutes,budget_usd)
        VALUES($1,$2,$3,$4,$5,$6)`,
@@ -82,8 +83,10 @@ export function createCards(options: {
     ).rows[0];
     if (!card) {
       if (request.card !== undefined || request.question !== undefined)
-        throw new Error('Only a card closes with card or question. Finish this task with result.');
-      if (!request.result?.trim()) throw new Error('Finishing a task needs result.');
+        throw cardRefusal(
+          'Only a card closes with card or question. Finish this task with result.',
+        );
+      if (!request.result?.trim()) throw cardRefusal('Finishing a task needs result.');
       return request.result.trim();
     }
     const result = cardResult(request);

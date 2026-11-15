@@ -44,19 +44,19 @@ skills: [research]
 Lead the growth team. Split work into cards for the right analyst.
 ```
 
-| Field         | Required | Meaning                                                                                                                                                                                                                |
-| ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`       | Yes      | The agent's display name.                                                                                                                                                                                              |
-| `role`        | Yes      | One line on what the agent is for.                                                                                                                                                                                     |
-| `tools`       | Yes      | The Nod tools the agent may use, by name. Every other tool is removed from its session, and a name that isn't a Nod tool rejects the file. Add `workspace` to keep the Linux workspace, web search and codemode tools. |
-| `model`       | No       | The model the agent should use. Not used yet.                                                                                                                                                                          |
-| `skills`      | No       | Skills the agent must follow. Not used yet.                                                                                                                                                                            |
-| `cardSkills`  | No       | Extra skills per card type. Not used yet.                                                                                                                                                                              |
-| `connections` | No       | The app connections the agent may use. Not used yet.                                                                                                                                                                   |
-| `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; not enforced yet.                                                                                                                                 |
-| `schedules`   | No       | The agent's recurring schedules. Not used yet.                                                                                                                                                                         |
-| `knowledge`   | No       | Knowledge collections. Reserved for phase 2 and not used yet.                                                                                                                                                          |
-| `workflows`   | No       | n8n workflows. Reserved for phase 2 and not used yet.                                                                                                                                                                  |
+| Field         | Required | Meaning                                                                                                                                    |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `title`       | Yes      | The agent's display name.                                                                                                                  |
+| `role`        | Yes      | One line on what the agent is for.                                                                                                         |
+| `tools`       | Yes      | The Nod tools the agent may use, by name. Every other tool is removed from its session, and a name that isn't a Nod tool rejects the file. |
+| `model`       | No       | The model the agent should use. Not used yet.                                                                                              |
+| `skills`      | No       | Skills the agent must follow. Not used yet.                                                                                                |
+| `cardSkills`  | No       | Extra skills per card type. Not used yet.                                                                                                  |
+| `connections` | No       | The app connections the agent may use. Not used yet.                                                                                       |
+| `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; not enforced yet.                                                     |
+| `schedules`   | No       | The agent's recurring schedules. Not used yet.                                                                                             |
+| `knowledge`   | No       | Knowledge collections. Reserved for phase 2 and not used yet.                                                                              |
+| `workflows`   | No       | n8n workflows. Reserved for phase 2 and not used yet.                                                                                      |
 
 Nod reads the folder again at the start of every turn, so an edit takes effect on the next message. A file that can't be read, has no frontmatter, has an unknown or missing field, or sits outside a team folder is skipped. So is a team whose lead isn't one of its agents. Each skipped file is logged as `agent_config_rejected` with its path and reason, and every valid agent still loads.
 
@@ -72,7 +72,7 @@ If `router.md` is missing or invalid, the main chat still runs as a Router, with
 
 A card is a task with one owner agent. Its details are kept in the `agent_cards` table, keyed by task ID: the owner agent, card type, estimate in agent minutes, the agent's `budget.cardUsd` and the result.
 
-Every turn of the card's session runs as its owner agent, with that agent's tools and instructions, so the owner's replies to a card reach the agent working it. If the agent's config is later removed or broken, the card's session keeps only `task`, `ask_user` and `send_message` and closes the card with a question asking the owner to fix it.
+Every turn of the card's session runs as its owner agent, with that agent's tools and instructions and, like the Router, without the workspace, web search or codemode tools, so the owner's replies to a card reach the agent working it. If the agent's config is later removed or broken, the card's session keeps only `task`, `ask_user` and `send_message` and closes the card with a question asking the owner to fix it.
 
 A card closes only through `task finish`, with one of:
 

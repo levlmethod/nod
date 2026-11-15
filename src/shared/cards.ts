@@ -44,18 +44,22 @@ export const cardFinishParams = {
 const closeHint =
   'Close a card with card {conclusion, evidence: [...], nextAction, confidence: low|medium|high}, or with question set to exactly one question for the owner.';
 
+export function cardRefusal(message: string) {
+  return Object.assign(new Error(message), { statusCode: 400 });
+}
+
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
 export function cardResult(input: { card?: unknown; question?: unknown }): CardResult {
   const hasCard = input.card !== undefined;
   const hasQuestion = input.question !== undefined;
   if (hasCard && hasQuestion)
-    throw new Error(`This card can't close with both a result and a question. ${closeHint}`);
+    throw cardRefusal(`This card can't close with both a result and a question. ${closeHint}`);
   if (hasQuestion) {
     const question = text(input.question);
     const marks = question.match(/[?？]/gu)?.length ?? 0;
     if (!question || marks !== 1 || !/[?？]$/u.test(question))
-      throw new Error(
+      throw cardRefusal(
         `This card can't close: question must be exactly one question for the owner, ending in its only question mark. ${closeHint}`,
       );
     return { question };
@@ -73,7 +77,7 @@ export function cardResult(input: { card?: unknown; question?: unknown }): CardR
     ...((cardConfidence as readonly string[]).includes(confidence) ? [] : ['confidence']),
   ];
   if (missing.length)
-    throw new Error(
+    throw cardRefusal(
       `This card can't close: the result is missing ${missing.join(', ')}. ${closeHint}`,
     );
   return {

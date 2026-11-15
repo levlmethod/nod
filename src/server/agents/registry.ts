@@ -52,7 +52,6 @@ export type AgentRegistry = {
 };
 
 export const routerAgent = 'router';
-export const workspaceTool = 'workspace';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -124,11 +123,7 @@ export async function loadAgentRegistry(
             throw new Error(`Another team already has an agent named ${name}.`);
           const config = validated<Static<typeof agentSchema>>(agentSchema, fields);
           const unknown = config.tools.filter(
-            (tool) =>
-              knownTools &&
-              !tool.startsWith('mcp__') &&
-              tool !== workspaceTool &&
-              !knownTools.includes(tool),
+            (tool) => knownTools && !tool.startsWith('mcp__') && !knownTools.includes(tool),
           );
           if (unknown.length) throw new Error(`tools: ${unknown.join(', ')} is not a Nod tool.`);
           members.push({
@@ -156,8 +151,12 @@ export async function loadAgentRegistry(
 const cardRules =
   'You own this card until it closes. Close it with task finish {id, status, card: {conclusion, evidence: [...], nextAction, confidence: low|medium|high}}, or with question set to exactly one question for the owner when you need their decision. Any other finish is refused.';
 
+export function cardOwners(registry: AgentRegistry) {
+  return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+}
+
 function roster(registry: AgentRegistry) {
-  const owners = [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+  const owners = cardOwners(registry);
   if (!owners.length)
     return 'No agent can own a card yet, so tell the owner the agent configs need adding.';
   const teams = [...registry.teams.values()]
