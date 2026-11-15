@@ -1,6 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { basename, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, join, relative, resolve } from 'node:path';
 import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { parse } from 'yaml';
@@ -160,11 +159,12 @@ export function bindAgent(
 
 export function createAgentBinding(
   knownTools: readonly string[],
-  root = process.env.NOD_AGENTS_ROOT || fileURLToPath(new URL('../../../agents/', import.meta.url)),
+  root = process.env.NOD_AGENTS_ROOT,
 ) {
+  if (!root) return async () => ({});
   let reported = '';
   const load = async () => {
-    const registry = await loadAgentRegistry(root, knownTools);
+    const registry = await loadAgentRegistry(resolve(root), knownTools);
     const problems = JSON.stringify(registry.problems);
     if (problems !== reported) {
       reported = problems;

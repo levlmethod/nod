@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import type { Agent, AgentSessionOptions, AgentTool, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
-import { bindAgent, loadAgentRegistry } from '../src/server/agents/registry.ts';
+import { bindAgent, createAgentBinding, loadAgentRegistry } from '../src/server/agents/registry.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 async function configRoot(files: Record<string, string>) {
@@ -141,6 +141,11 @@ test('the main chat runs as the Router, falls back to a routing-only Router when
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('without NOD_AGENTS_ROOT the main chat runs unbound, as upstream Nod does', async () => {
+  const threadId = randomUUID();
+  assert.deepEqual(await createAgentBinding(['task'], '')({ threadId, sessionId: threadId }), {});
 });
 
 async function runAs(

@@ -9,7 +9,7 @@ In this fork, work is done by named agents organised into teams. Each agent is o
 
 ## The config folder
 
-Agents live in the `agents/` folder at the root of the repository. To use another folder, set `NOD_AGENTS_ROOT`.
+Agents live in the `agents/` folder at the root of the repository. Set `NOD_AGENTS_ROOT` to the folder to turn agents on; `.env.example` sets it to `agents`. Without it, Nod runs as upstream Nod does and no session runs as an agent.
 
 ```text
 agents/
