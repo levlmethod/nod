@@ -24,6 +24,10 @@ Cards that need the owner or are blocked come first in each team. Each client's 
 
 Selecting a card opens its done-when line, its result or its question for the owner, its child cards, each ask with its questions and answers, the actions the PM took on it and the card's activity.
 
+## Taboola
+
+Below the clients, the **Taboola** section lists the connected Taboola accounts and has the form that adds one. See [Watchers](/how-it-works/watchers/#taboola).
+
 ## Access
 
 The page reads `GET /api/board` and `GET /api/board/cards/:id`. Like every `/api` route they need the local access key and return only the owner's own cards. When `NOD_AGENTS_ROOT` isn't set, the page says that agents are off.

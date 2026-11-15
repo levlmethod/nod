@@ -68,6 +68,68 @@ Each threshold has exactly one of `drop`, `rise`, `above`, `below` and `pace`. A
 - `newestFirst: true` reverses a list that comes back newest first.
 - `combine: count` checks how many items the path found, and `combine: sum` checks their total.
 
+## Taboola
+
+Taboola has no MCP server, so the fork has its own read-only Taboola connection for RKMD's spend and performance. It talks to Taboola's Backstage API from the server, and the watcher sees it as one more connection with service `taboola`.
+
+### Add the credentials
+
+1. In Taboola Backstage, ask your Taboola account manager for API access. They give you a client ID and a client secret. Note the advertiser's account ID (`account_id`, a text ID such as `rkmd-sc`, not the number).
+2. In Nod, open **Board**. Under **Taboola**, enter the client ID, client secret and account ID, and select **Connect Taboola**.
+3. Nod signs in to Taboola and checks that the credentials can read that account before it saves anything. If Taboola refuses, the form shows Taboola's status and reason and saves nothing.
+4. Add the account to the client's file:
+
+```yaml
+connections:
+  - service: taboola
+    account: rkmd-sc
+```
+
+The client secret is encrypted with Nod's vault key in the server's database. It never goes into the sandbox, a browser, a prompt, a log or the repository, and the Board shows only the account. **Disconnect** deletes the connection and its saved secret. To change the secret, connect the same account again.
+
+### Tools
+
+The Taboola connection has only three tools, and every request it sends to the Backstage API is a GET. The only other request is the sign-in that exchanges the client credentials for a short-lived token.
+
+| Tool                   | Reads                                                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_account`          | The account the connection is bound to.                                                                                                |
+| `list_campaigns`       | The account's campaigns, in `results`.                                                                                                 |
+| `get_campaign_summary` | The campaign summary report, in `results`. Day rows come oldest first, with `spent`, `clicks`, `impressions`, `cpc`, `cpa` and `roas`. |
+
+`get_campaign_summary` takes these inputs, all optional:
+
+- `days`: how many days through yesterday. Defaults to 14, at most 90. Yesterday is the last full day, so a partial today doesn't look like a drop.
+- `monthToDate: true`: from the first of the month instead, for a `pace` check.
+- `includeToday: true`: also the partial current day.
+- `timeZone`: the IANA time zone that decides which day is today. Defaults to UTC.
+- `dimension`: `day` by default, or `week`, `month`, `campaign_breakdown`, `campaign_day_breakdown`, `site_breakdown`, `country_breakdown` or `platform_breakdown`.
+- `campaign`: one campaign ID.
+
+For example, a daily spend drop and a monthly pace check for RKMD:
+
+```yaml
+thresholds:
+  taboola-spend-drop:
+    agent: paid-media-analyst
+    source:
+      service: taboola
+      tool: get_campaign_summary
+      input: { days: 8 }
+      values: 'results[].spent'
+    drop: 0.5
+  taboola-pace:
+    agent: paid-media-analyst
+    source:
+      service: taboola
+      tool: get_campaign_summary
+      input: { monthToDate: true, timeZone: America/New_York }
+      values: 'results[].spent'
+    pace: { monthlyUsd: 3000, over: 0.2 }
+```
+
+The Taboola connection serves watchers only. A card's agent doesn't get Taboola tools yet, so an investigation card for a Taboola anomaly starts from the numbers in its first turn.
+
 ## Watchers only read
 
 A watcher calls only a tool whose name is a read. Before any call, the tool is refused when its server hints that it is not read-only or is destructive, when its name has a write word such as create, send, update, delete, refund, spam or sync, or when its name has no read word such as get, list, search, query or fetch (GA4's `run_report` also counts as a read). A server's read-only hint alone never lets a tool through. A refused tool is never called, and the watcher logs `watcher_check_failed` with the tool and the reason.

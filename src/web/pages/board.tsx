@@ -11,6 +11,7 @@ import { MessageText } from '../components/message';
 import { usePageData } from '../hooks/use-page-data';
 import { money } from '../lib/money';
 import { TaskActivity } from './tasks';
+import { TaboolaConnections } from './taboola';
 import './board.css';
 
 const labels: Record<BoardState, string> = {
@@ -209,6 +210,7 @@ export function Board() {
               )}
             </section>
           ))}
+          <TaboolaConnections />
         </>
       )}
     </div>

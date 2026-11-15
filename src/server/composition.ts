@@ -133,6 +133,7 @@ import { createBoard } from './agents/board.ts';
 import { createClientBudget } from './agents/client-budget.ts';
 import { createPm } from './agents/pm.ts';
 import { createWatchers } from './agents/watchers.ts';
+import { createTaboola } from './agents/taboola.ts';
 import { createInbox } from './agents/inbox.ts';
 import { createAgentBrowserProfiles } from './agents/browser-profiles.ts';
 import { createTierQueue, heldMessageSql, tierInstructions } from './agents/tier-queue.ts';
@@ -1242,6 +1243,8 @@ async function initializeApplication(
     ownerId,
     keyStore: adapters.keyStore,
   });
+  const taboola = createTaboola({ pool, ownerId, grantVault });
+  await taboola.initialize();
   const discovered = await createDiscoveredConnections(pool, {
     analytics: captureAnalytics,
     analyticsConsent,
@@ -2913,6 +2916,7 @@ async function initializeApplication(
     cards,
     spend: clientBudget.spend,
   }).registerRoutes(app);
+  taboola.registerRoutes(app);
   activityLog.registerRoutes(app);
   registerSpeechSettings(app, {
     speech,
@@ -3165,8 +3169,10 @@ async function initializeApplication(
     pool,
     ownerId,
     registry: () => agents.registry(),
-    servers: discovered.servers,
-    call: (args) => discovered.execute('CONNECTED_MCP_CALL', args),
+    ...taboola.alongside({
+      servers: discovered.servers,
+      call: (args) => discovered.execute('CONNECTED_MCP_CALL', args),
+    }),
   });
   let stopWatchers: (() => Promise<void>) | undefined;
   app.addHook('onReady', async () => {

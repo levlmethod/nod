@@ -135,3 +135,8 @@
 .board-ask[data-flagged='true'] > p {
   color: var(--error);
 }
+.board-connection-form {
+  display: grid;
+  gap: 12px;
+  max-width: 420px;
+}
