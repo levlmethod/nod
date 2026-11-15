@@ -889,7 +889,7 @@ async function initializeApplication(
   };
   const mailCheck = createMailCheck({ curator, decisions });
   const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
-  const agentBrowsers = createAgentBrowserProfiles({ pool, ownerId });
+  const agentBrowsers = createAgentBrowserProfiles({ pool, ownerId, underTurn: withTurnLock });
   const agents = createAgentBinding({
     browserProfiles: agentBrowsers.owned,
     knownTools: Object.keys(toolDefinitions),
@@ -2599,7 +2599,7 @@ async function initializeApplication(
           return (await vault.fillSaved(turn, ownerId, savedLoginId, request))
             ? filled(savedLoginId)
             : vault.request(turn, ownerId, request);
-        const selected = await vault.fillSelected(turn, ownerId, request);
+        const selected = walled ? false : await vault.fillSelected(turn, ownerId, request);
         if (selected) return filled();
         if (selected === undefined && chosen) {
           if (await vault.fillSaved(turn, ownerId, chosen.id, request)) return filled(chosen.id);

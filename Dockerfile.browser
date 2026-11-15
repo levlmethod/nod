@@ -15,8 +15,9 @@ ARG NOD_RUNTIME_REFRESH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb xauth xdotool ffmpeg fonts-liberation fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji ca-certificates \
     && if [ "$(dpkg --print-architecture)" = amd64 ]; then \
-      node -e "fetch('https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb').then(async (r) => { if (!r.ok) throw new Error('Google Chrome download failed with HTTP ' + r.status); require('node:fs').writeFileSync('/tmp/google-chrome.deb', Buffer.from(await r.arrayBuffer())); })" \
-      && apt-get install -y --no-install-recommends /tmp/google-chrome.deb && rm /tmp/google-chrome.deb; \
+      node -e "fetch('https://dl.google.com/linux/linux_signing_key.pub').then(async (r) => { if (!r.ok) throw new Error('The Google Chrome signing key download failed with HTTP ' + r.status); require('node:fs').writeFileSync('/usr/share/keyrings/google-chrome.asc', await r.text()); })" \
+      && echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list \
+      && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable; \
     else apt-get install -y --no-install-recommends chromium; fi \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app

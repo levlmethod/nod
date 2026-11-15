@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { BrowserConnectionRequest } from '../../ports/agent.ts';
 import type { TurnRef } from '../thread.ts';
 import { browserOf } from '../turn-chain.ts';
@@ -17,8 +17,13 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function createAgentBrowserProfiles(options: {
   pool: Pick<Pool, 'query'>;
   ownerId: string;
+  underTurn?: (
+    turnId: string,
+    write: (client: Pick<PoolClient, 'query'>) => Promise<unknown>,
+  ) => Promise<unknown>;
 }) {
   const { pool, ownerId } = options;
+  const underTurn = options.underTurn ?? ((_turnId, write) => write(pool));
 
   async function initialize() {
     await pool.query(`
@@ -81,11 +86,14 @@ export function createAgentBrowserProfiles(options: {
           signal,
           launch,
         )) as { connectionId?: unknown };
-        if (typeof result?.connectionId === 'string')
-          await pool.query(
-            `INSERT INTO agent_browser_profiles(connection_id,owner_id,agent,client)
-             VALUES($1,$2,$3,$4)`,
-            [result.connectionId, ownerId, card.agent, card.client],
+        const connectionId = result?.connectionId;
+        if (typeof connectionId === 'string')
+          await underTurn(turn.turnId, (client) =>
+            client.query(
+              `INSERT INTO agent_browser_profiles(connection_id,owner_id,agent,client)
+               VALUES($1,$2,$3,$4)`,
+              [connectionId, ownerId, card.agent, card.client],
+            ),
           );
         return result;
       }

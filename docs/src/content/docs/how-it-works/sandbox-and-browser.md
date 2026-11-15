@@ -89,7 +89,7 @@ The CLI then runs with an environment built from scratch: a fixed `PATH`, a priv
 
 The browser is a separate trusted container. It doesn't share mounts or a network namespace with the workspace. The server drives Vercel Labs [agent-browser](https://github.com/vercel-labs/agent-browser) over a fixed stdin bridge to a private Unix socket.
 
-On Linux x64 the image installs Google Chrome stable, because many websites flag Chromium as a bot, and the browser runs it. Google ships no Chrome for Linux on other architectures, so there the image installs Chromium. When the worker starts, it logs a `browser_product` line naming the browser it runs and, for Chromium, the reason. An x64 image without Chrome, such as one built before this change, also runs Chromium, and the reason says to rebuild the image.
+On Linux x64 the image installs Google Chrome stable from Google's signed apt repository, because many websites flag Chromium as a bot, and the browser runs it. Google ships no Chrome for Linux on other architectures, so there the image installs Chromium. When the worker starts, it logs a `browser_product` line naming the browser it runs and, for Chromium, the reason. An x64 image without Chrome, such as one built before this change, also runs Chromium, and the reason says to rebuild the image.
 
 | Setting    | Value                                                                   |
 | ---------- | ----------------------------------------------------------------------- |

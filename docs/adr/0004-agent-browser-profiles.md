@@ -2,11 +2,11 @@
 
 Doug's agents need to stay signed in to each client's ad accounts and dashboards, and websites flag Chromium as a bot. Upstream already keeps signed-in browser profiles as saved browser sessions (`browser_connections`, one profile folder each). The fork keeps that model and adds a fork-only `agent_browser_profiles` side table that records which agent and client made each profile. A card's `browser_session` calls go through a guard that refuses any profile its agent didn't make for its client, and its `sign_in` calls run only inside one of its own profiles, with no saved login, authenticator code or email code from the owner's shared Vault and mailbox.
 
-The browser image installs Google Chrome stable on amd64 and Chromium elsewhere, since Google ships no Linux arm64 Chrome. The container worker picks Chrome when it is installed on x64 and logs which browser runs and why.
+The browser image installs Google Chrome stable from Google's signed apt repository on amd64 and Chromium elsewhere, since Google ships no Linux arm64 Chrome. The container worker picks Chrome when it is installed on x64 and logs which browser runs and why.
 
 ## Upstream files touched
 
-- `src/server/composition.ts`: wraps the `browserConnection` dependency with the card guard, calls the sign-in guard at the top of `requestCredential`, and for a card skips the authenticator code and the automatic saved login. It passes the card's own profiles to the agent binding.
+- `src/server/composition.ts`: wraps the `browserConnection` dependency with the card guard, calls the sign-in guard at the top of `requestCredential`, and for a card skips the authenticator code, the automatic saved login and a login picked in the private form. It passes the card's own profiles to the agent binding.
 - `Dockerfile.browser`: installs Google Chrome on amd64 instead of Chromium, and installs the `chrome.sh` wrapper.
 - `src/providers/container-browser/config.ts`: takes the browser executable from `chrome.ts`.
 - `src/providers/container-browser/worker.ts`: logs the browser product and fallback reason at startup.
