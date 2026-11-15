@@ -157,7 +157,7 @@ export function createCards(options: {
       throw cardRefusal(
         `A card needs the one client it is for. Name it with client, one of: ${clients}. Ask the owner if their words don't say which.`,
       );
-    if (!parentCard && !registry.clients.has(cardClient))
+    if (!registry.clients.has(cardClient))
       throw cardRefusal(`${cardClient} is not a client. Use one of: ${clients}.`);
     if (!request.estimateMinutes)
       throw cardRefusal(
@@ -167,7 +167,7 @@ export function createCards(options: {
     const blockers = (
       await client.query<{ task_id: string; state: string }>(
         `SELECT c.task_id,t.state FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
-         WHERE c.owner_id=$1 AND c.task_id=ANY($2::uuid[]) AND c.client IS NOT DISTINCT FROM $3`,
+         WHERE c.owner_id=$1 AND c.task_id=ANY($2::uuid[]) AND c.client=$3`,
         [ownerId, blockedBy, cardClient],
       )
     ).rows;

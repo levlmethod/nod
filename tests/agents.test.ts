@@ -6,14 +6,13 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import type { Agent, AgentSessionOptions, AgentTool, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
-import { toolDefinitions } from '../src/runtime/tools.ts';
+import { mcpNamespaces, toolDefinitions } from '../src/runtime/tools.ts';
 import { bindAgent, createAgentBinding, loadAgentRegistry } from '../src/server/agents/registry.ts';
 import { wallCard } from '../src/server/agents/clients.ts';
-import { mcpNamespaces } from '../src/runtime/tools.ts';
+import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 const namespaces = (servers: NonNullable<RuntimeContext['mcpServers']>) =>
   mcpNamespaces(servers).map(({ namespace }) => namespace);
-import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 async function configRoot(files: Record<string, string>) {
   const root = await mkdtemp(join(tmpdir(), 'nod-agents-'));
@@ -1169,7 +1168,6 @@ Write copy in the client's brand voice.
           pool: db.pool,
           ownerId,
           registry: async () => registry,
-          tasks: () => tasks.read(),
           cards,
           spend: budget.spend,
         });
@@ -1194,6 +1192,21 @@ Write copy in the client's brand voice.
             question: 'Can I move $200 from Meta to Taboola?',
           },
           null,
+        );
+        await db.pool.query("UPDATE tasks SET closed_at=now()-interval '30 days' WHERE id=$1", [
+          asking.id,
+        ]);
+        const { task: waiting } = await routerCard('Ask me which Formulaic email to rewrite.', {
+          client: 'formulaic',
+          blockedBy: [lead.id],
+        });
+        await db.pool.query(
+          "UPDATE turns SET status='waiting' WHERE id=(SELECT id FROM turns WHERE session_id=$1 ORDER BY created_at LIMIT 1)",
+          [waiting.id],
+        );
+        await db.pool.query(
+          'UPDATE tasks SET turn_id=(SELECT id FROM turns WHERE session_id=$1 ORDER BY created_at LIMIT 1) WHERE id=$1',
+          [waiting.id],
         );
         const { task: old } = await routerCard('Old RKMD audit.');
         await finishCard(await cardTurn(old.id), old.id, 'Audit done.');
@@ -1243,6 +1256,7 @@ Write copy in the client's brand voice.
         ]);
         assert.equal(placed.get(asking.id)?.client, 'rkmd');
         assert.equal(placed.get(asking.id)?.card.state, 'needs_you');
+        assert.equal(placed.get(waiting.id)?.card.state, 'needs_you');
         assert.notEqual(placed.get(lead.id)?.card.state, 'blocked');
         assert.notEqual(placed.get(lead.id)?.card.state, 'needs_you');
         assert.equal(placed.has(old.id), false);
@@ -1269,7 +1283,7 @@ Write copy in the client's brand voice.
         assert.deepEqual((await board.card(asking.id)).result, {
           question: 'Can I move $200 from Meta to Taboola?',
         });
-        await assert.rejects(board.card(hidden.id), /Card not found/);
+        await assert.rejects(board.card(hidden.id), /not found for this owner/);
 
         const app = Fastify({ logger: false });
         registerLocalAccess(app, 4310, { key: 'synthetic-local-access' });
@@ -1295,7 +1309,6 @@ Write copy in the client's brand voice.
           pool: db.pool,
           ownerId,
           registry: async () => undefined,
-          tasks: () => tasks.read(),
           cards,
           spend: budget.spend,
         });

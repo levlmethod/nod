@@ -2855,7 +2855,6 @@ async function initializeApplication(
     pool,
     ownerId,
     registry: () => agents.registry(),
-    tasks: () => tasks.read(),
     cards,
     spend: clientBudget.spend,
   }).registerRoutes(app);
