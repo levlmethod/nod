@@ -129,6 +129,7 @@ import { createCommunication, publicText } from './communication.ts';
 import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
+import { createPm } from './agents/pm.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -891,7 +892,9 @@ async function initializeApplication(
     knownTools: Object.keys(toolDefinitions),
     cardAgent: cards.agentFor,
     askedAgent: cards.askedAgentFor,
+    pmSession: (sessionId) => pm.isPmSession(sessionId),
   });
+  const pm = createPm({ pool, ownerId, registry: () => agents.registry(), cards });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -939,6 +942,10 @@ async function initializeApplication(
         },
       );
       if (event.type === 'tool_end') captureAnalytics(toolUsed(event));
+      if (event.type === 'tool_start' && agents.enabled)
+        void pm
+          .recordCall(turnId, name, event.input)
+          .catch((error) => logFailure('agent_card_call', error));
       adapters.observe?.(turnId, event);
     },
   });
@@ -1136,6 +1143,7 @@ async function initializeApplication(
   });
   await tasks.initialize();
   await cards.initialize();
+  await pm.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -2085,6 +2093,7 @@ async function initializeApplication(
       consumers,
       run: () => analytics.withSystemWork(ownerId, 'memory_learning', learning.run),
     });
+    if (agents.enabled) await pm.start({ boss, consumers });
     await startThreadWorkers({
       present: communication.present,
       taskChecks: tasks.resumeDue,
@@ -2182,6 +2191,8 @@ async function initializeApplication(
       },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
+        const managed = await pm.act(turn, raw);
+        if (managed !== undefined) return managed;
         const handled = await cards.act(turn, raw);
         if (handled !== undefined) return handled;
         const request = raw as { action?: unknown; model?: unknown } | undefined;

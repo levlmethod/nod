@@ -52,6 +52,7 @@ export type AgentRegistry = {
 };
 
 export const routerAgent = 'router';
+export const pmAgent = 'pm';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -154,8 +155,13 @@ const cardRules =
 const askRules =
   "Another agent asked you a question on their card. The card stays theirs: answer only what was asked, using your tools if you need to check something, and reply with task answer {id, answer}. Don't start, change or close cards from here.";
 
+const pmRules = (owners: string) =>
+  `You are the PM. You keep cards on track and never do a card's work: your only tool is task, and only these actions work:\n- task list: read the board.\n- task nudge {id, message}: resume the card's owner agent with your direction.\n- task split {id, cards: [{agent, title, doneWhen, estimateMinutes}], reason}: have the owner agent split its card into these child cards.\n- task reassign {id, agent, reason}: give the card to another agent, who continues it.\n- task decide {ask, decision}: make the call on a stuck ask; the asking card continues with your decision.\n- task escalate {id, question}: put one question to the owner in the main chat, only when no agent can decide.\nAct only on the cards the board scan flagged, pick the smallest action that unsticks each one, and end your turn when every flagged card has one. Every action is recorded on the card. Estimates are in agent minutes. Agents that can own a card: ${owners}.`;
+
 export function cardOwners(registry: AgentRegistry) {
-  return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+  return [...registry.agents.values()].filter(
+    (agent) => agent.name !== routerAgent && agent.name !== pmAgent,
+  );
 }
 
 function roster(registry: AgentRegistry) {
@@ -179,9 +185,23 @@ export function bindAgent(
   registry: AgentRegistry,
   context: BindingContext,
   cardAgent?: string,
-  role: 'owner' | 'asked' = 'owner',
+  role: 'owner' | 'asked' | 'pm' = 'owner',
 ): { agent?: NonNullable<RuntimeContext['agent']> } {
   if (context.proactivity) return {};
+  if (role === 'pm') {
+    const config = registry.agents.get(pmAgent);
+    const owners = cardOwners(registry)
+      .map((agent) => `${agent.name} (${agent.title}: ${agent.role})`)
+      .join(', ');
+    return {
+      agent: {
+        name: pmAgent,
+        title: config?.title ?? 'PM',
+        tools: ['task'],
+        instructions: `${config?.instructions ?? 'The PM config in agents/core/pm.md is missing or invalid, so you run with the built-in PM rules only.'}\n\n${pmRules(owners || 'none yet')}`,
+      },
+    };
+  }
   if (context.sessionId === context.threadId) {
     const { name, title, tools, instructions } = registry.agents.get(routerAgent) ?? fallbackRouter;
     return {
@@ -216,11 +236,13 @@ export function createAgentBinding(options: {
   knownTools: readonly string[];
   cardAgent: (sessionId: string) => Promise<string | undefined>;
   askedAgent?: (sessionId: string) => Promise<string | undefined>;
+  pmSession?: (sessionId: string) => Promise<boolean>;
   root?: string;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
   if (!root)
     return {
+      enabled: false,
       registry: async () => undefined,
       bind: async (_context: BindingContext): Promise<ReturnType<typeof bindAgent>> => ({}),
     };
@@ -237,10 +259,13 @@ export function createAgentBinding(options: {
   };
   void load();
   return {
+    enabled: true,
     registry: load,
     bind: async (context: BindingContext) => {
       if (context.proactivity) return {};
       if (context.sessionId === context.threadId) return bindAgent(await load(), context);
+      if (await options.pmSession?.(context.sessionId))
+        return bindAgent(await load(), context, pmAgent, 'pm');
       const cardAgent = await options.cardAgent(context.sessionId);
       if (cardAgent) return bindAgent(await load(), context, cardAgent);
       const asked = await options.askedAgent?.(context.sessionId);

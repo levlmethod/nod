@@ -50,6 +50,57 @@ export const cardAnswer = z
   .object({ action: z.literal('answer'), id: z.uuid(), answer: z.string().trim().min(1).max(4000) })
   .strict();
 
+const pmChild = {
+  agent: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(200),
+  doneWhen: z.string().trim().min(1).max(1000),
+  estimateMinutes: z.number().int().positive().max(10_000),
+};
+
+export const pmAction = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('nudge'),
+      id: z.uuid(),
+      message: z.string().trim().min(1).max(4000),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('split'),
+      id: z.uuid(),
+      cards: z.array(z.object(pmChild).strict()).min(1).max(5),
+      reason: z.string().trim().min(1).max(2000),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('reassign'),
+      id: z.uuid(),
+      agent: z.string().trim().min(1),
+      reason: z.string().trim().min(1).max(2000),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('decide'),
+      ask: z.uuid(),
+      decision: z.string().trim().min(1).max(4000),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('escalate'),
+      id: z.uuid(),
+      question: z.string().trim().min(1).max(2000),
+    })
+    .strict(),
+]);
+
+export type PmAction = z.infer<typeof pmAction>;
+
+export const pmActions = new Set<string>(['nudge', 'split', 'reassign', 'decide', 'escalate']);
+
 export const cardActionParams = [
   Type.Object(
     {
@@ -68,6 +119,59 @@ export const cardActionParams = [
     },
     { additionalProperties: false },
   ),
+  Type.Object(
+    {
+      action: Type.Literal('nudge'),
+      id: uuid,
+      message: Type.String({ minLength: 1, maxLength: 4000 }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      action: Type.Literal('split'),
+      id: uuid,
+      cards: Type.Array(
+        Type.Object(
+          {
+            agent: Type.String({ minLength: 1 }),
+            title: Type.String({ minLength: 1, maxLength: 200 }),
+            doneWhen: Type.String({ minLength: 1, maxLength: 1000 }),
+            estimateMinutes: Type.Integer({ minimum: 1, maximum: 10_000 }),
+          },
+          { additionalProperties: false },
+        ),
+        { minItems: 1, maxItems: 5 },
+      ),
+      reason: Type.String({ minLength: 1, maxLength: 2000 }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      action: Type.Literal('reassign'),
+      id: uuid,
+      agent: Type.String({ minLength: 1 }),
+      reason: Type.String({ minLength: 1, maxLength: 2000 }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      action: Type.Literal('decide'),
+      ask: uuid,
+      decision: Type.String({ minLength: 1, maxLength: 4000 }),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      action: Type.Literal('escalate'),
+      id: uuid,
+      question: Type.String({ minLength: 1, maxLength: 2000 }),
+    },
+    { additionalProperties: false },
+  ),
 ] as const;
 
 export type CardView = {
@@ -81,6 +185,7 @@ export type CardView = {
   agentMinutes: number;
   waitingMinutes: number;
   asks: { id: string; agent: string; exchanges: number; pending: boolean; flagged: boolean }[];
+  activity: { actor: string; action: string; detail: string; at: string }[];
 };
 
 export const cardFinishParams = {

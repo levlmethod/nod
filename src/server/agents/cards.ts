@@ -39,7 +39,7 @@ export type CardHooks = {
 
 type Exchange = { question: string; answer?: string; unanswered?: boolean };
 
-const unsettled = (task: string) =>
+export const unsettled = (task: string) =>
   `(${task}.state='open' OR (${task}.state='done' AND EXISTS(SELECT 1 FROM agent_cards q
     WHERE q.task_id=${task}.id AND q.owner_id=${task}.owner_id AND q.result ? 'question')))`;
 
@@ -80,6 +80,19 @@ export function createCards(options: {
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (owner_id, task_id, to_agent)
       );
+      CREATE TABLE IF NOT EXISTS agent_card_activity (
+        id uuid PRIMARY KEY,
+        owner_id text NOT NULL,
+        task_id uuid NOT NULL REFERENCES tasks(id),
+        actor text NOT NULL,
+        action text NOT NULL,
+        detail text NOT NULL,
+        flag_key text,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS agent_card_activity_task ON agent_card_activity(owner_id,task_id,created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_card_activity_flag ON agent_card_activity(owner_id,task_id,flag_key)
+        WHERE flag_key IS NOT NULL;
     `);
   }
 
@@ -488,7 +501,9 @@ export function createCards(options: {
              FROM (SELECT u.owner_id,u.session_id,${waitStarted('u')} AS at FROM turns u
                WHERE u.owner_id=c.owner_id AND u.session_id=t.session_id) w WHERE w.at IS NOT NULL),0) AS waiting_seconds,
            COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'agent',a.to_agent,'exchanges',a.exchanges,'flagged',a.flagged_at IS NOT NULL) ORDER BY a.created_at)
-             FROM agent_card_asks a WHERE a.owner_id=c.owner_id AND a.task_id=c.task_id),'[]') AS asks
+             FROM agent_card_asks a WHERE a.owner_id=c.owner_id AND a.task_id=c.task_id),'[]') AS asks,
+           COALESCE((SELECT jsonb_agg(jsonb_build_object('actor',v.actor,'action',v.action,'detail',v.detail,'at',v.created_at) ORDER BY v.created_at,v.id)
+             FROM agent_card_activity v WHERE v.owner_id=c.owner_id AND v.task_id=c.task_id),'[]') AS activity
          FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
          WHERE c.owner_id=$1 AND ($2::uuid[] IS NULL OR c.task_id=ANY($2::uuid[]))
          ORDER BY c.created_at,c.task_id`,
@@ -514,11 +529,30 @@ export function createCards(options: {
         pending: ask.exchanges.some((exchange) => exchange.answer === undefined),
         flagged: ask.flagged || ask.exchanges.some((exchange) => exchange.unanswered),
       })),
+      activity: row.activity,
     }));
+  }
+
+  async function record(
+    client: PoolClient,
+    taskId: string,
+    entry: { actor: string; action: string; detail: string; flagKey?: string },
+  ) {
+    return Boolean(
+      (
+        await client.query(
+          `INSERT INTO agent_card_activity(id,owner_id,task_id,actor,action,detail,flag_key)
+           VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+          [ownerId, taskId, entry.actor, entry.action, entry.detail, entry.flagKey ?? null],
+        )
+      ).rowCount,
+    );
   }
 
   return {
     initialize,
+    record,
+    latestTurn,
     hooks: { start, finish, closed } satisfies CardHooks,
     agentFor,
     askedAgentFor,

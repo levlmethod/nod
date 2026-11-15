@@ -26,7 +26,7 @@ The agent the main chat runs as. It only turns requests into cards; it never doe
 _Avoid_: Orchestrator, coordinator, dispatcher
 
 **PM**:
-The agent that keeps cards on track: it flags stalls, loops and overruns and decides or escalates.
+The agent that keeps cards on track. A code scan of the board flags stalls, loops and overruns every 30 minutes, and only flagged cards reach the PM, which nudges, splits, reassigns, decides or escalates.
 _Avoid_: Project manager bot, supervisor
 
 **Chief of Staff**:
@@ -67,6 +67,14 @@ _Avoid_: Dependency, prerequisite
 **Ask**:
 One question an agent puts to another agent on a card, capped at three back-and-forths.
 _Avoid_: Chat, discussion, thread
+
+**Flag**:
+A problem the board scan finds on an open card: stalled, a repeated question, an ask over its cap, a loop, over budget or left open. Each is flagged once until it gets worse.
+_Avoid_: Alert, warning
+
+**Card activity**:
+The record on a card of each flag and each PM action, with its reason.
+_Avoid_: Log, audit trail
 
 **Agent minutes**:
 The unit for every estimate and plan. Time waiting on the owner is counted separately.

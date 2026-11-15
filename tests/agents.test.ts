@@ -8,6 +8,7 @@ import type { Agent, AgentSessionOptions, AgentTool, RuntimeContext } from '../s
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { toolDefinitions } from '../src/runtime/tools.ts';
 import { bindAgent, createAgentBinding, loadAgentRegistry } from '../src/server/agents/registry.ts';
+import { scanBoard, type CardSnapshot } from '../src/server/agents/pm-scan.ts';
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 async function configRoot(files: Record<string, string>) {
@@ -234,6 +235,97 @@ test('a session with no agent keeps every upstream tool', async () => {
   assert.ok(checked);
 });
 
+const healthy = (fields: Partial<CardSnapshot> = {}): CardSnapshot => ({
+  taskId: randomUUID(),
+  title: 'Find the RKMD conversion drop',
+  agent: 'growth-analyst',
+  estimateMinutes: 30,
+  agentMinutes: 20,
+  budgetUsd: 4,
+  spentUsd: 1.5,
+  asks: [{ id: randomUUID(), agent: 'copywriter', flagged: false }],
+  questions: ['Which week should I compare?', 'Did the copy change?'],
+  calls: ['apps:ga4', 'browser:open', 'apps:ga4', 'browser:snapshot'].map((fingerprint) => ({
+    id: randomUUID(),
+    name: fingerprint.split(':')[0]!,
+    fingerprint,
+  })),
+  idleSince: null,
+  handled: [],
+  ...fields,
+});
+const board = (...cards: CardSnapshot[]) => ({ now: '2026-11-15T12:00:00.000Z', cards });
+const kinds = (snapshot: ReturnType<typeof board>) => scanBoard(snapshot).map((flag) => flag.kind);
+
+test('a healthy board has no flags', () => {
+  assert.deepEqual(scanBoard(board(healthy(), healthy({ agentMinutes: 59 }))), []);
+});
+
+test('a card past twice its estimate is flagged as stalled, once per doubling', () => {
+  const card = healthy({ estimateMinutes: 30, agentMinutes: 61 });
+  const [flag] = scanBoard(board(card));
+  assert.equal(flag?.kind, 'stalled');
+  assert.equal(flag?.taskId, card.taskId);
+  assert.match(flag?.detail ?? '', /61 agent minutes.*30/);
+  assert.deepEqual(kinds(board({ ...card, handled: [flag!.key] })), []);
+  assert.deepEqual(kinds(board({ ...card, agentMinutes: 125, handled: [flag!.key] })), ['stalled']);
+});
+
+test('a card repeating the same question is flagged', () => {
+  const card = healthy({
+    questions: ['Which week should I compare?', 'which  week should I compare', 'Other?'],
+  });
+  const [flag] = scanBoard(board(card));
+  assert.equal(flag?.kind, 'repeated_question');
+  assert.match(flag?.detail ?? '', /2 times.*Which week should I compare\?/);
+  assert.deepEqual(kinds(board({ ...card, handled: [flag!.key] })), []);
+});
+
+test('an ask over its cap is flagged once', () => {
+  const ask = { id: randomUUID(), agent: 'copywriter', flagged: true };
+  const card = healthy({ asks: [ask] });
+  const [flag] = scanBoard(board(card));
+  assert.equal(flag?.kind, 'ask_over_cap');
+  assert.match(flag?.detail ?? '', new RegExp(`copywriter.*${ask.id}`));
+  assert.deepEqual(kinds(board({ ...card, handled: [flag!.key] })), []);
+});
+
+test('a card looping on the same tool call is flagged, and again only after more calls', () => {
+  const call = () => ({ id: randomUUID(), name: 'browser', fingerprint: 'browser:click-next' });
+  const calls = [call(), call(), { ...call(), fingerprint: 'apps:ga4' }, call(), call()];
+  const card = healthy({ calls });
+  const [flag] = scanBoard(board(card));
+  assert.equal(flag?.kind, 'loop');
+  assert.match(flag?.detail ?? '', /browser 4 times/);
+  assert.deepEqual(kinds(board({ ...card, handled: [flag!.key] })), []);
+  assert.deepEqual(kinds(board({ ...card, calls: [...calls, call()], handled: [flag!.key] })), [
+    'loop',
+  ]);
+  assert.deepEqual(kinds(board(healthy({ calls: calls.slice(1) }))), []);
+});
+
+test('a card over its budget is flagged, and a card with no budget never is', () => {
+  const [flag] = scanBoard(board(healthy({ budgetUsd: 4, spentUsd: 4.2 })));
+  assert.equal(flag?.kind, 'over_budget');
+  assert.match(flag?.detail ?? '', /\$4\.20.*\$4\.00/);
+  assert.deepEqual(kinds(board(healthy({ budgetUsd: null, spentUsd: 40 }))), []);
+});
+
+test('a card left open with nothing running for 15 minutes is flagged as unfinished', () => {
+  assert.deepEqual(kinds(board(healthy({ idleSince: '2026-11-15T11:50:00.000Z' }))), []);
+  const card = healthy({ idleSince: '2026-11-15T11:40:00.000Z' });
+  const [flag] = scanBoard(board(card));
+  assert.equal(flag?.kind, 'unfinished');
+  assert.deepEqual(kinds(board({ ...card, handled: [flag!.key] })), []);
+});
+
+test('one card can carry several flags at once', () => {
+  assert.deepEqual(kinds(board(healthy({ agentMinutes: 90, spentUsd: 9 }))).sort(), [
+    'over_budget',
+    'stalled',
+  ]);
+});
+
 const analyst = `---
 title: Growth Analyst
 role: Finds why a client's growth metrics moved.
@@ -261,6 +353,13 @@ test(
     const root = await configRoot({
       'core/team.md': team('router'),
       'core/router.md': agentFile(['task', 'ask_user', 'send_message']),
+      'core/pm.md': `---
+title: PM
+role: Keeps cards on track.
+tools: [task, browser, apps]
+---
+Keep every card moving.
+`,
       'growth/team.md': `---
 lead: growth-analyst
 routing: Owns client growth metrics, traffic and conversion questions.
@@ -284,6 +383,7 @@ Write copy in the client's brand voice.
     const thread = await import('../src/server/thread.ts');
     const { createTasks } = await import('../src/server/tasks.ts');
     const { createCards } = await import('../src/server/agents/cards.ts');
+    const { createPm } = await import('../src/server/agents/pm.ts');
     const { createPersonalService } = await import('../src/server/personal.ts');
     const { ownerId } = await import('../src/server/config.ts');
     t.after(async () => {
@@ -309,6 +409,10 @@ Write copy in the client's brand voice.
     }).initialize({ workers: false });
     await tasks.initialize();
     await cards.initialize();
+    const pm = createPm({ pool: db.pool, ownerId, registry: async () => registry, cards });
+    await pm.initialize();
+    const { createLedger } = await import('../src/server/ledger.ts');
+    await createLedger({ pool: db.pool, ownerId }).initialize();
     const running = async (turnId: string) => {
       await db.pool.query("UPDATE turns SET status='running',started_at=now() WHERE id=$1", [
         turnId,
@@ -794,6 +898,228 @@ Write copy in the client's brand voice.
       const [asking] = await cards.read([task.id]);
       assert.equal(Math.round(asking!.agentMinutes), 14);
       assert.equal(Math.round(asking!.waitingMinutes), 16);
+    });
+
+    const pmRuns = async () =>
+      (
+        await db.pool.query<{ id: string; prompt: string; turn_id: string }>(
+          `SELECT r.id,u.prompt,u.id AS turn_id FROM agent_pm_runs r JOIN turns u ON u.session_id=r.id
+           ORDER BY r.created_at,u.created_at`,
+        )
+      ).rows;
+    const pmTurn = async () => {
+      const [run] = (await pmRuns()).slice(-1);
+      return { run: run!, turn: await running(run!.turn_id) };
+    };
+    const settle = (turnId: string) =>
+      db.pool.query("UPDATE turns SET status='succeeded',finished_at=now() WHERE id=$1", [turnId]);
+
+    await t.test('the PM scan makes no model request when nothing is flagged', async () => {
+      await db.pool.query("UPDATE tasks SET state='cancelled',closed_at=now() WHERE state='open'");
+      await db.pool.query(
+        "UPDATE turns SET status='cancelled',finished_at=now() WHERE status IN ('queued','running','waiting')",
+      );
+      const { task } = await routerCard('Check the RKMD Taboola pacing.', { estimateMinutes: 10 });
+      await cardTurn(task.id);
+      const before = (await db.pool.query('SELECT count(*)::int AS n FROM turns')).rows[0].n;
+      assert.deepEqual((await pm.scan()).flags, []);
+      assert.equal((await db.pool.query('SELECT count(*)::int AS n FROM turns')).rows[0].n, before);
+      assert.equal((await pmRuns()).length, 0);
+    });
+
+    await t.test(
+      'flagged cards start one PM turn, which acts only on them with card actions that are recorded on the card',
+      async () => {
+        const [stalled] = (
+          await db.pool.query<{ id: string; session_id: string }>(
+            "SELECT id,session_id FROM tasks WHERE state='open'",
+          )
+        ).rows;
+        const work = (
+          await db.pool.query<{ id: string }>(
+            "SELECT id FROM turns WHERE session_id=$1 AND status='running'",
+            [stalled!.session_id],
+          )
+        ).rows[0]!.id;
+        await db.pool.query("UPDATE turns SET started_at=now()-interval '25 minutes' WHERE id=$1", [
+          work,
+        ]);
+        for (let call = 0; call < 4; call++)
+          await pm.recordCall(work, 'browser', { ref: 'e12', action: 'click' });
+        await pm.recordCall(work, 'browser', { action: 'click', ref: 'e13' });
+        await db.pool.query(
+          'INSERT INTO model_usage(id,owner_id,turn_id,cost_usd) VALUES($1,$2,$3,4.5)',
+          [randomUUID(), ownerId, work],
+        );
+        const { task: quiet } = await routerCard('Draft the Formulaic newsletter.', {
+          estimateMinutes: 60,
+        });
+        await cardTurn(quiet.id);
+        const { task: abandoned } = await routerCard('Audit the Krowdit pricing page.', {
+          estimateMinutes: 60,
+        });
+        await db.pool.query(
+          "UPDATE turns SET status='succeeded',started_at=now()-interval '21 minutes',finished_at=now()-interval '20 minutes' WHERE id=$1",
+          [(await cardTurn(abandoned.id)).turnId],
+        );
+        const scanned = await pm.scan();
+        assert.deepEqual(
+          scanned.flags
+            .map((flag) => `${flag.taskId === stalled!.id ? 'stalled' : 'abandoned'}:${flag.kind}`)
+            .sort(),
+          ['abandoned:unfinished', 'stalled:loop', 'stalled:over_budget', 'stalled:stalled'],
+        );
+        const runs = await pmRuns();
+        assert.equal(runs.length, 1);
+        assert.match(runs[0]!.prompt, new RegExp(`${stalled!.id}[\\s\\S]*Stalled[\\s\\S]*Looping`));
+        assert.doesNotMatch(runs[0]!.prompt, new RegExp(quiet.id));
+        assert.deepEqual((await pm.scan()).flags, []);
+        assert.equal((await pmRuns()).length, 1);
+
+        const binding = createAgentBinding({
+          knownTools: Object.keys(toolDefinitions),
+          cardAgent: cards.agentFor,
+          askedAgent: cards.askedAgentFor,
+          pmSession: pm.isPmSession,
+          root,
+        });
+        const { run, turn } = await pmTurn();
+        const bound = (await binding.bind({ threadId: turn.threadId, sessionId: run.id })).agent;
+        assert.equal(bound?.name, 'pm');
+        assert.deepEqual(bound?.tools, ['task']);
+        assert.match(bound?.instructions ?? '', /Keep every card moving\.[\s\S]*task nudge/);
+        assert.match(bound?.instructions ?? '', /copywriter/);
+        const chat = bindAgent(registry, { threadId: turn.threadId, sessionId: turn.threadId });
+        assert.doesNotMatch(chat.agent?.instructions ?? '', /- pm, PM/);
+
+        await assert.rejects(
+          pm.act(turn, start({ agent: 'copywriter', estimateMinutes: 5 })),
+          /only acts on cards/,
+        );
+        await assert.rejects(
+          pm.act(turn, { action: 'finish', id: stalled!.id, status: 'done', result: 'Done.' }),
+          /only acts on cards/,
+        );
+        assert.equal(await pm.act(turn, { action: 'list' }), undefined);
+        await assert.rejects(
+          pm.act(turn, { action: 'nudge', id: quiet.id, message: 'Hurry up.' }),
+          /not flagged/,
+        );
+        await assert.rejects(
+          pm.act(await cardTurn(quiet.id), {
+            action: 'nudge',
+            id: stalled!.id,
+            message: 'Hurry up.',
+          }),
+          /Only the PM/,
+        );
+        await pm.act(turn, {
+          action: 'nudge',
+          id: stalled!.id,
+          message: 'Stop clicking e12; read the pacing report instead.',
+        });
+        assert.match((await resumes(stalled!.id)).at(-1)!, /PM[\s\S]*Stop clicking e12/);
+        await assert.rejects(
+          pm.act(turn, { action: 'reassign', id: stalled!.id, agent: 'pm', reason: 'Mine.' }),
+          /copywriter/,
+        );
+        await pm.act(turn, {
+          action: 'reassign',
+          id: stalled!.id,
+          agent: 'copywriter',
+          reason: 'This is a writing task.',
+        });
+        assert.equal(await cards.agentFor(stalled!.id), 'copywriter');
+        assert.match((await resumes(stalled!.id)).at(-1)!, /reassigned[\s\S]*growth-analyst/);
+        await pm.act(turn, {
+          action: 'split',
+          id: stalled!.id,
+          reason: 'Pacing and copy are separate jobs.',
+          cards: [
+            {
+              agent: 'growth-analyst',
+              title: 'Pull the pacing numbers',
+              doneWhen: 'Daily spend vs plan is known.',
+              estimateMinutes: 10,
+            },
+          ],
+        });
+        assert.match(
+          (await resumes(stalled!.id)).at(-1)!,
+          /split[\s\S]*Pull the pacing numbers: agent growth-analyst/,
+        );
+        await pm.act(turn, {
+          action: 'escalate',
+          id: stalled!.id,
+          question: 'Should RKMD pacing keep its Taboola cap this month?',
+        });
+        assert.ok(
+          (
+            await db.pool.query("SELECT 1 FROM messages WHERE role='assistant' AND text LIKE $1", [
+              '%Should RKMD pacing keep its Taboola cap this month?%',
+            ])
+          ).rowCount,
+        );
+        const [card] = await cards.read([stalled!.id]);
+        assert.deepEqual(
+          card?.activity.map((entry) => `${entry.actor}:${entry.action}`),
+          [
+            'pm:flagged',
+            'pm:flagged',
+            'pm:flagged',
+            'pm:nudge',
+            'pm:reassign',
+            'pm:split',
+            'pm:escalate',
+          ],
+        );
+        assert.match(card!.activity[4]!.detail, /growth-analyst to copywriter/);
+        await settle(turn.turnId);
+      },
+    );
+
+    await t.test('the PM makes the call on a stuck ask and the asking card continues', async () => {
+      await db.pool.query("UPDATE tasks SET state='cancelled',closed_at=now() WHERE state='open'");
+      const { task } = await routerCard('Explain the Formulaic refund spike.', {
+        estimateMinutes: 60,
+      });
+      const work = await cardTurn(task.id);
+      const asked = (await cards.act(work, {
+        action: 'ask',
+        id: task.id,
+        agent: 'copywriter',
+        question: 'Did the refund email change?',
+      })) as { ask: string };
+      await db.pool.query('UPDATE agent_card_asks SET flagged_at=now() WHERE id=$1', [asked.ask]);
+      const scanned = await pm.scan();
+      assert.deepEqual(
+        scanned.flags.map((flag) => flag.kind),
+        ['ask_over_cap'],
+      );
+      const { turn } = await pmTurn();
+      await pm.act(turn, {
+        action: 'decide',
+        ask: asked.ask,
+        decision: 'Treat the refund email as unchanged; check the billing page instead.',
+      });
+      assert.match((await resumes(task.id)).at(-1)!, /made the call[\s\S]*billing page/);
+      await assert.rejects(
+        cards.act(
+          await running(
+            (
+              await db.pool.query<{ id: string }>(
+                "SELECT id FROM turns WHERE session_id=$1 AND status='queued' LIMIT 1",
+                [asked.ask],
+              )
+            ).rows[0]!.id,
+          ),
+          { action: 'answer', id: asked.ask, answer: 'Late answer.' },
+        ),
+        /no question/,
+      );
+      const [card] = await cards.read([task.id]);
+      assert.equal(card?.activity.at(-1)?.action, 'decide');
+      await settle(turn.turnId);
     });
   },
 );
