@@ -50,8 +50,8 @@ Lead the growth team. Split work into cards for the right analyst.
 | `role`        | Yes      | One line on what the agent is for.                                                                                                         |
 | `tools`       | Yes      | The Nod tools the agent may use, by name. Every other tool is removed from its session, and a name that isn't a Nod tool rejects the file. |
 | `model`       | No       | The model the agent should use. Not used yet.                                                                                              |
-| `skills`      | No       | Skills the agent must follow. Not used yet.                                                                                                |
-| `cardSkills`  | No       | Extra skills per card type. Not used yet.                                                                                                  |
+| `skills`      | No       | Skills the agent must follow, loaded in full into every session it runs. See [Required skills](#required-skills).                          |
+| `cardSkills`  | No       | Extra skills per card type, such as `investigation: [anomaly-triage]`, loaded with `skills` on cards of that type.                         |
 | `connections` | No       | The app connections the agent may use. Not used yet.                                                                                       |
 | `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; not enforced yet.                                                     |
 | `schedules`   | No       | The agent's recurring schedules. Not used yet.                                                                                             |
@@ -59,6 +59,12 @@ Lead the growth team. Split work into cards for the right analyst.
 | `workflows`   | No       | n8n workflows. Reserved for phase 2 and not used yet.                                                                                      |
 
 Nod reads the folder again at the start of every turn, so an edit takes effect on the next message. A file that can't be read, has no frontmatter, has an unknown or missing field, or sits outside a team folder is skipped. So is a team whose lead isn't one of its agents. Each skipped file is logged as `agent_config_rejected` with its path and reason, and every valid agent still loads.
+
+## Required skills
+
+An agent's `skills`, plus the `cardSkills` listed for the card's type, are added in full to the end of its system prompt before its first turn and on every turn after, so the agent doesn't have to choose to read them. The Router gets its own `skills` the same way. Nod looks for each name first in the fork's `agent-skills/` folder (`agent-skills/<name>/SKILL.md`, or the folder in `NOD_AGENT_SKILLS_ROOT`) and then in Nod's built-in skills. Each card turn adds a `Loaded skills:` line naming them to the card's activity.
+
+A skill name that matches neither, or a skill file that can't be read, rejects the agent's file like any other config problem: it's logged as `agent_config_rejected` with the path and the missing name, and the agent's cards close with a question asking the owner to fix the config.
 
 ## The Router
 
@@ -81,4 +87,4 @@ A card closes only through `task finish`, with one of:
 
 Any other finish is refused with the missing parts named, and a final reply alone doesn't close a card. The card's saved result is the conclusion, evidence, next action and confidence as text, or the question. When `NOD_AGENTS_ROOT` isn't set, there are no cards: the chat starts plain tasks as upstream Nod does, and a task that names an agent is refused. Schedules, background work and tasks Nod starts on its own don't run as an agent yet.
 
-The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md` and `docs/adr/0002-cards-extend-tasks.md`.
+The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md`, `docs/adr/0002-cards-extend-tasks.md` and `docs/adr/0003-required-skills-load-into-agent-instructions.md`.

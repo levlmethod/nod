@@ -105,15 +105,18 @@ export function createCards(options: {
     return cardResultText(result);
   };
 
-  async function agentFor(sessionId: string) {
+  async function cardFor(sessionId: string) {
     return (
-      await pool.query<{ agent: string }>(
-        `SELECT c.agent FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
+      await pool.query<{ agent: string; card_type: string }>(
+        `SELECT c.agent,c.card_type FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
          WHERE c.owner_id=$1 AND t.session_id=$2`,
         [ownerId, sessionId],
       )
-    ).rows[0]?.agent;
+    ).rows[0];
   }
+
+  const agentFor = async (sessionId: string) => (await cardFor(sessionId))?.agent;
+  const typeFor = async (sessionId: string) => (await cardFor(sessionId))?.card_type;
 
   async function isCardTurn(turnId: string) {
     return Boolean(
@@ -127,5 +130,11 @@ export function createCards(options: {
     );
   }
 
-  return { initialize, hooks: { start, finish } satisfies CardHooks, agentFor, isCardTurn };
+  return {
+    initialize,
+    hooks: { start, finish } satisfies CardHooks,
+    agentFor,
+    typeFor,
+    isCardTurn,
+  };
 }

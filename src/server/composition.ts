@@ -886,15 +886,17 @@ async function initializeApplication(
       : undefined;
   };
   const mailCheck = createMailCheck({ curator, decisions });
-  const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
-  const agents = createAgentBinding({
-    knownTools: Object.keys(toolDefinitions),
-    cardAgent: cards.agentFor,
-  });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
   );
+  const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
+  const agents = createAgentBinding({
+    knownTools: Object.keys(toolDefinitions),
+    cardAgent: cards.agentFor,
+    cardType: cards.typeFor,
+    skills: { library: skillLibrary },
+  });
   const analyzeImages =
     adapters.imageCurator && createImageAnalysis(ledger.curator(adapters.imageCurator));
   const runtime = createAgentRuntime({
