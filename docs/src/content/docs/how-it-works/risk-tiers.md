@@ -46,4 +46,4 @@ The next approval on that card within 10 minutes takes the note. Without one, th
 
 A queued item that isn't urgent doesn't notify: Nod web and the desktop app show no notification for it and Telegram or WhatsApp never receive it. It stays on its card in Nod until the owner opens it. The morning digest, a later change, will lead with the queue. An item the agent marks urgent notifies at once, like any other question.
 
-The code is in `src/server/agents/tiers.ts` (the tier policy and tier rules) and `src/server/agents/tier-queue.ts` (the queue, notes and hold). The upstream files it hooks into are listed in `docs/adr/0004-risk-tiers.md`.
+The code is in `src/server/agents/tiers.ts` (the tier policy and tier rules) and `src/server/agents/tier-queue.ts` (the queue, notes and hold). The upstream files it hooks into are listed in `docs/adr/0012-risk-tiers.md`.

@@ -54,4 +54,4 @@ The card belongs to the chosen agent and client and runs behind that client's wa
 
 Each thread opens at most one card, ever: the card is keyed by the inbox and thread, and later messages in the same thread open nothing new. A thread the Inbox agent called routine is triaged again only when a new message arrives in it. Every decision is saved in the `inbox_triage` table with its reason, and each failed read or decision is logged as `inbox_triage_failed` with the inbox and the reason.
 
-Triage runs only when agents are on (`NOD_AGENTS_ROOT` is set) and a model is connected. The code is in `src/server/agents/inbox.ts`; the upstream file it hooks into is listed in `docs/adr/0004-inbox-triage.md`.
+Triage runs only when agents are on (`NOD_AGENTS_ROOT` is set) and a model is connected. The code is in `src/server/agents/inbox.ts`; the upstream file it hooks into is listed in `docs/adr/0010-inbox-triage.md`.
