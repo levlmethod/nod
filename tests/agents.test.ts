@@ -145,7 +145,14 @@ test('the main chat runs as the Router, falls back to a routing-only Router when
 
 test('without NOD_AGENTS_ROOT the main chat runs unbound, as upstream Nod does', async () => {
   const threadId = randomUUID();
-  assert.deepEqual(await createAgentBinding(['task'], '')({ threadId, sessionId: threadId }), {});
+  const binding = createAgentBinding({
+    knownTools: ['task'],
+    cardAgent: async () => 'growth-analyst',
+    root: '',
+  });
+  assert.deepEqual(await binding.bind({ threadId, sessionId: threadId }), {});
+  assert.deepEqual(await binding.bind({ threadId, sessionId: randomUUID() }), {});
+  assert.equal(await binding.registry(), undefined);
 });
 
 async function runAs(
@@ -432,6 +439,31 @@ routing: Owns client growth metrics, traffic and conversion questions.
         ['GA4 paid sessions fell 80% from Tuesday.', 'Spend hit the cap on Tuesday.'],
       );
     });
+
+    await t.test(
+      'with agents off the chat starts plain tasks and refuses card fields',
+      async () => {
+        const off = createCards({ pool: db.pool, ownerId, registry: async () => undefined });
+        const plain = createTasks({ pool: db.pool, ownerId, cards: off.hooks });
+        const { turn, messageId } = await ask('Summarise the RKMD weekly report.');
+        await assert.rejects(
+          plain.execute(turn, start({ agent: 'growth-analyst', estimateMinutes: 10 }), messageId),
+          /Agents are off/,
+        );
+        const task = (await plain.execute(turn, start({}), messageId)) as { id: string };
+        assert.equal(await off.agentFor(task.id), undefined);
+        const work = await cardTurn(task.id);
+        await plain.execute(
+          work,
+          { action: 'finish', id: task.id, status: 'done', result: 'Synthetic summary.' },
+          null,
+        );
+        assert.equal(
+          (await db.pool.query('SELECT result FROM tasks WHERE id=$1', [task.id])).rows[0].result,
+          'Synthetic summary.',
+        );
+      },
+    );
 
     await t.test('a card can close with exactly one question for the owner', async () => {
       const { turn, messageId } = await ask('Should we change the RKMD Taboola bids?');

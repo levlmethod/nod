@@ -211,7 +211,11 @@ export function createAgentBinding(options: {
   root?: string;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
-  if (!root) return { registry: async () => undefined, bind: async (_context: BindingContext) => ({}) };
+  if (!root)
+    return {
+      registry: async () => undefined,
+      bind: async (_context: BindingContext): Promise<ReturnType<typeof bindAgent>> => ({}),
+    };
   let reported = '';
   const load = async () => {
     const registry = await loadAgentRegistry(resolve(root), options.knownTools);

@@ -16,7 +16,7 @@ export type CardHooks = {
 export function createCards(options: {
   pool: Pool;
   ownerId: string;
-  registry: () => Promise<AgentRegistry>;
+  registry: () => Promise<AgentRegistry | undefined>;
 }) {
   const { pool, ownerId } = options;
 
@@ -43,6 +43,13 @@ export function createCards(options: {
       return;
     }
     const registry = await options.registry();
+    if (!registry) {
+      if (named !== undefined)
+        throw cardRefusal(
+          'Agents are off, so cards are unavailable. Set NOD_AGENTS_ROOT to turn them on.',
+        );
+      return;
+    }
     const owners = cardOwners(registry);
     const names = owners.map((agent) => agent.name).join(', ');
     if (!owners.length)

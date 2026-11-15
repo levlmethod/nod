@@ -79,6 +79,6 @@ A card closes only through `task finish`, with one of:
 - `card`: a `conclusion`, a non-empty `evidence` list, a `nextAction` and a `confidence` of `low`, `medium` or `high`.
 - `question`: exactly one question for the owner, ending in its only question mark. Replying to it reopens the card.
 
-Any other finish is refused with the missing parts named, and a final reply alone doesn't close a card. The card's saved result is the conclusion, evidence, next action and confidence as text, or the question. Schedules, background work and tasks Nod starts on its own don't run as an agent yet.
+Any other finish is refused with the missing parts named, and a final reply alone doesn't close a card. The card's saved result is the conclusion, evidence, next action and confidence as text, or the question. When `NOD_AGENTS_ROOT` isn't set, there are no cards: the chat starts plain tasks as upstream Nod does, and a task that names an agent is refused. Schedules, background work and tasks Nod starts on its own don't run as an agent yet.
 
 The code is in `src/server/agents/`. The upstream files it hooks into are listed in `docs/adr/0001-agents-hook-into-upstream-runtime.md` and `docs/adr/0002-cards-extend-tasks.md`.
