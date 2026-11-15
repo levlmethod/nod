@@ -206,7 +206,10 @@ export function bindAgent(
 
 type WallContext = BindingContext &
   Partial<
-    Pick<RuntimeContext, 'connectedApps' | 'mcpServers' | 'tasks' | 'relatedConversation'>
+    Pick<
+      RuntimeContext,
+      'connectedApps' | 'mcpServers' | 'tasks' | 'relatedConversation' | 'learnedSkills'
+    >
   > & {
     history?: RuntimeContext['history'];
   };

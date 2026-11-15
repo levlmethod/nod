@@ -331,7 +331,15 @@ test('a card sees only its own client: other clients’ connections, memory, cha
         agent: {
           name: 'growth-analyst',
           title: 'Growth Analyst',
-          tools: ['apps', 'task', 'manage_personal_context', 'mcp__Krowdit__growth_ga4_run_report'],
+          tools: [
+            'apps',
+            'task',
+            'manage_personal_context',
+            'skills',
+            'sign_in',
+            'files',
+            'mcp__Krowdit__growth_ga4_run_report',
+          ],
           instructions: 'Investigate.',
         },
         connectedApps: [
@@ -344,6 +352,7 @@ test('a card sees only its own client: other clients’ connections, memory, cha
           { role: 'assistant', text: 'Working on RKMD.', turnId: ownTurn },
         ],
         relatedConversation: [{ role: 'user', text: 'Formulaic margins are 60%' }],
+        learnedSkills: [{ name: 'formulaic-launch-checklist', description: 'Launch steps' }],
         tasks: [{ id: rkmdCard }, { id: formulaicCard }] as RuntimeContext['tasks'],
       },
       {
@@ -403,7 +412,9 @@ test('a card sees only its own client: other clients’ connections, memory, cha
           args: { query: 'launch' },
         });
         await attempt('task', { action: 'list' });
-        await attempt('task', { action: 'reply', ids: [formulaicCard], message: 'hi' });
+        await attempt('skills', { action: 'read', name: 'formulaic-launch-checklist' });
+        await attempt('sign_in', { origin: 'https://ads.example' });
+        await attempt('files', { action: 'list', path: '~/Clients/Formulaic' });
       },
       walled,
       async () => {
@@ -418,7 +429,10 @@ test('a card sees only its own client: other clients’ connections, memory, cha
     assert.match(outcomes[3]!, /isn't one of RKMD's connections/);
     assert.match(outcomes[4]!, /memory, history.*shared across every client/);
     assert.match(outcomes[5]!, /holds every client's cards/);
-    assert.match(outcomes[6]!, /isn't a card for RKMD/);
+    assert.match(outcomes[6]!, /Learned procedures are shared/);
+    assert.match(outcomes[7]!, /Saved logins belong to the owner/);
+    assert.match(outcomes[8]!, /computer holds every client's files/);
+    assert.equal(walled.learnedSkills, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

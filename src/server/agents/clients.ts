@@ -81,13 +81,17 @@ const serverOwned = (client: ClientConfig, server: ConnectedMcpServer) =>
 
 type WallInput = Pick<
   RuntimeContext,
-  'connectedApps' | 'mcpServers' | 'history' | 'tasks' | 'relatedConversation'
+  'connectedApps' | 'mcpServers' | 'history' | 'tasks' | 'relatedConversation' | 'learnedSkills'
 > & { agent: NonNullable<RuntimeContext['agent']> };
 
 const sharedTools: Record<string, string> = {
   manage_personal_context:
     "The owner's memory, history, settings and usage are shared across every client",
   manage_apps: 'The app list holds every client’s accounts',
+  sign_in: 'Saved logins belong to the owner, not to one client',
+  browser_session: 'Saved browser sessions belong to the owner, not to one client',
+  pay: 'Saved cards belong to the owner, not to one client',
+  files: "The owner's computer holds every client's files",
 };
 
 export function wallCard(
@@ -111,6 +115,7 @@ export function wallCard(
     ...servers.map((server) => server.connectionId),
   ]);
   const namespaces = new Set(card.namespaces(servers));
+  const learned = new Set((input.learnedSkills ?? []).map((skill) => skill.name));
   const owner = (connectionId: string) =>
     [...card.clients.values()].find(
       (other) =>
@@ -134,25 +139,15 @@ export function wallCard(
     const request = (params ?? {}) as {
       action?: unknown;
       args?: { connectionId?: unknown };
-      id?: unknown;
-      ids?: unknown;
+      name?: unknown;
     };
-    if (name === 'task') {
-      if (request.action === 'list')
-        return `The task list holds every client's cards, so a card for ${label} reads only its own client's cards from its context.`;
-      const ids = [
-        ...(Array.isArray(request.ids) ? request.ids : []),
-        ...(typeof request.id === 'string' &&
-        request.action !== 'finish' &&
-        request.action !== 'update'
-          ? [request.id]
-          : []),
-      ].map(String);
-      const outside = ids.filter((id) => !card.clientCards.has(id));
-      if (outside.length)
-        return `Task ${outside.join(', ')} isn't a card for ${label}, so this card can't reach it.`;
-      return undefined;
-    }
+    if (name === 'task' && request.action === 'list')
+      return `The task list holds every client's cards, so a card for ${label} reads only its own client's cards from its context.`;
+    if (
+      name === 'skills' &&
+      (request.action === 'save' || request.action === 'patch' || learned.has(String(request.name)))
+    )
+      return `Learned procedures are shared across every client, so a card for ${label} can't read or write them. Task guides still work.`;
     if (name.startsWith('mcp__')) {
       if (namespaces.has(name.split('__')[1] ?? '')) return undefined;
       return `${name} isn't one of ${label}'s connections, so this card can't use it. Add the connection to the client's config if it belongs to ${label}.`;
@@ -181,6 +176,7 @@ export function wallCard(
     memory: '',
     memoryBrief: undefined,
     relatedConversation: undefined,
+    learnedSkills: undefined,
     history: input.history.filter(
       (message) => typeof message.turnId === 'string' && card.sessionTurns.has(message.turnId),
     ),

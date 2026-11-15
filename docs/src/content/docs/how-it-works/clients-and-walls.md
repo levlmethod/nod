@@ -58,10 +58,11 @@ Every turn of a card's session runs behind its client's wall:
 - **Brief.** The agent's instructions gain the client's title and brief. No other client's brief is shown.
 - **Connections.** Only the apps and MCP servers listed in the client's `connections` are offered. An `apps` call must name the `connectionId` of one of them; a call naming another client's connection is refused with the client it belongs to, and a call with no connection or an unlisted one is refused with the client's own connections.
 - **Memory and chat.** The owner's saved memory, related conversation and history search are shared across every client, so a card gets none of them: no memory index, no memory preparation, no related messages, and `manage_personal_context` is refused with the reason. The card's recent conversation holds only its own session's messages, not the main chat or other cards.
-- **Cards.** The task ledger in the card's context lists only cards for the same client. `task list` is refused, and `task reply` or `task stop` naming another client's card is refused.
-- **Apps list.** `manage_apps` lists every client's accounts, so a card can't use it.
+- **Learned procedures.** Learned skills are shared across clients, so a card isn't shown them and can't read, save or patch one. Task guides still work.
+- **Cards.** The task ledger in the card's context lists only cards for the same client, and `task list` is refused.
+- **Owner-wide tools.** `manage_apps`, `sign_in`, `browser_session`, `pay` and `files` reach the owner's accounts, saved logins, cards and computer across every client, so a card can't use them.
 
-A card whose client file is missing or invalid can use no connections and is told to close with one question asking the owner to fix the client file. Browser profiles per agent and client come with real Chrome in a later change.
+A card whose client file is missing or invalid can use no connections and is told to close with one question asking the owner to fix the client file. Browser profiles per agent and client, which will let a card sign in again, come with real Chrome in a later change.
 
 The main chat, where the Router runs, is not behind a wall: it sees the owner's memory and every client, because it only routes work.
 
