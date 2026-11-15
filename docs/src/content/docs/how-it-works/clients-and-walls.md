@@ -43,7 +43,7 @@ RKMD's brand guide and goals.
 | `connections` | No       | The connected accounts the client's cards may use. Each entry names the app or MCP server by `service` and the signed-in `account`, as listed in Apps. |
 | `dataSources` | No       | The sources the client's watchers check. Not used yet.                                                                                                 |
 | `thresholds`  | No       | Alert thresholds per metric for the watchers. Not used yet.                                                                                            |
-| `inboxes`     | No       | Email inboxes whose mail belongs to the client. Not used yet.                                                                                          |
+| `inboxes`     | No       | Email inboxes whose mail belongs to the client, triaged by the Inbox agent. See [Inbox triage](/how-it-works/inbox-triage/).                           |
 
 A file with no frontmatter, an unknown or missing field, or a budget that isn't above zero is skipped and logged as `agent_config_rejected` with its path and reason. The `clients` folder is not a team, so it needs no `team.md`.
 

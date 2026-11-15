@@ -53,6 +53,7 @@ export type AgentRegistry = {
 };
 
 export const routerAgent = 'router';
+export const inboxAgent = 'inbox';
 const fallbackRouter = {
   name: routerAgent,
   title: 'Router',
@@ -148,7 +149,9 @@ const cardRules =
   'You own this card until it closes. Close it with task finish {id, status, card: {conclusion, evidence: [...], nextAction, confidence: low|medium|high}}, or with question set to exactly one question for the owner when you need their decision. Any other finish is refused.';
 
 export function cardOwners(registry: AgentRegistry) {
-  return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
+  return [...registry.agents.values()].filter(
+    (agent) => agent.name !== routerAgent && agent.name !== inboxAgent,
+  );
 }
 
 function roster(registry: AgentRegistry) {

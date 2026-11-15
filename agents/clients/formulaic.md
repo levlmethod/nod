@@ -7,6 +7,12 @@ budget:
 #     account: billing@example.com
 connections: []
 dataSources: [ga4, stripe, meta, instagram, support-gmail, wordpress, mongodb]
+# Add the support inbox read through Doug's Krowdit MCP server, e.g.
+#   - address: support@formulaic.example
+#     connection: Krowdit
+#     tool: support_mail_gmail_search
+#     args:
+#       query: in:inbox newer_than:1d
 inboxes: []
 ---
 

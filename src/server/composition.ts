@@ -130,6 +130,7 @@ import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createClientBudget } from './agents/client-budget.ts';
+import { createInbox } from './agents/inbox.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -1974,6 +1975,16 @@ async function initializeApplication(
     ],
     { secrets, check: mailCheck, analytics: captureAnalytics },
   );
+  const inbox = createInbox({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    accounts: () => appReads.accounts(),
+    read: (input, signal) => observations.read(input, signal),
+    triage: (instructions, input, signal) =>
+      curator.curate({ task: 'classify', instructions, input, automatic: false }, signal),
+  });
+  await inbox.initialize();
   proactivity = createProactivity({
     pool,
     ownerId,
@@ -3037,6 +3048,25 @@ async function initializeApplication(
     }
   }
   await onboardingSuggestions.initialize();
+  if (options.workers !== false && adapters.model.configured) {
+    const checkInbox = () =>
+      void admission
+        .run(async () => {
+          const { opened, failed } = await inbox.check(closing.signal);
+          for (const failure of failed)
+            console.error(JSON.stringify({ event: 'inbox_triage_failed', ...failure }));
+          if (opened.length) refresh();
+        })
+        ?.catch((error) =>
+          console.error(
+            JSON.stringify({ event: 'inbox_triage_failed', reason: (error as Error).message }),
+          ),
+        );
+    const inboxTimer = setInterval(checkInbox, 15 * 60_000);
+    inboxTimer.unref();
+    closing.signal.addEventListener('abort', () => clearInterval(inboxTimer), { once: true });
+    setTimeout(checkInbox, 60_000).unref();
+  }
   if (adapters.model.configured)
     void admission.run(integrations.resumeWritingStyle)?.catch(() => {});
   let closingConsumers: Promise<void> | undefined;
