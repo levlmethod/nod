@@ -174,6 +174,7 @@ export interface RuntimeContext {
   credentialRequests?: Array<
     Pick<CredentialRequest, 'turnId' | 'origin' | 'label' | 'kind' | 'status'>
   >;
+  agent?: { name: string; title: string; tools: readonly string[]; instructions: string };
   taskContext?: {
     id: string;
     title: string;

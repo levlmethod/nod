@@ -722,6 +722,7 @@ export function createAgentRuntime(dependencies: {
           ...nodTools(turn, skills, dependencies.documentation),
           ...(context.proactivity ? [] : connectedTools(turn)),
         ]
+          .filter((tool) => !context.agent || context.agent.tools.includes(tool.name))
           .filter(
             (tool) =>
               !context.proactivity ||
@@ -806,13 +807,17 @@ export function createAgentRuntime(dependencies: {
               },
             };
           });
+      const role = context.agent
+        ? `\nYou are the ${context.agent.title} agent. Your only tools are ${context.agent.tools.join(', ')}.\n${context.agent.instructions}`
+        : '';
       const system =
         context.proactivity?.instructions ??
-        systemPrompt(workspace, dependencies.skills, context.taskContext, context.background);
+        systemPrompt(workspace, dependencies.skills, context.taskContext, context.background) +
+          role;
       const compactInstructions = {
         systemPrompt: context.proactivity
           ? system
-          : compactSystemPrompt(workspace, skills, context.taskContext, context.background),
+          : compactSystemPrompt(workspace, skills, context.taskContext, context.background) + role,
         ownerContext: compactOwnerContext(context),
       };
       const shared = {
@@ -1060,6 +1065,7 @@ export function createAgentRuntime(dependencies: {
         ...(context.model ? { model: context.model } : {}),
         automatic: Boolean(context.automatic),
         ...(context.proactivity ? { restricted: true, restartable: !context.resumed } : {}),
+        ...(context.agent ? { restricted: true } : {}),
         ...(context.scheduleCache ? { scheduleCache: context.scheduleCache } : {}),
         ...(sessionId === threadId && !context.proactivity && dependencies.keepWarm
           ? { keepWarm: () => dependencies.keepWarm!(threadId) }

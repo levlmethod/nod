@@ -126,6 +126,7 @@ import { createAgentReactionService } from './agent-reactions.ts';
 import { createApprovals, turnOrigin } from './approvals.ts';
 import { createCommunication, publicText } from './communication.ts';
 import { logFailure } from './failure-log.ts';
+import { createAgentBinding } from './agents/registry.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -883,6 +884,7 @@ async function initializeApplication(
       : undefined;
   };
   const mailCheck = createMailCheck({ curator, decisions });
+  const bindAgent = createAgentBinding();
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -2137,12 +2139,17 @@ async function initializeApplication(
                 )
               ).rowCount,
             ));
+        const bound = await bindAgent(context);
         const run = () =>
           ledger.withTurn(
             context.turnId,
             () =>
               runtime
-                .runTurn({ ...context, runtimeHost: desktopMode ? 'desktop' : 'server' })
+                .runTurn({
+                  ...context,
+                  ...bound,
+                  runtimeHost: desktopMode ? 'desktop' : 'server',
+                })
                 .finally(() => proactivity.release(context.turnId)),
             Boolean(context.spendingLimitReached),
             Boolean(context.automatic),
