@@ -4,6 +4,7 @@ import { Type, type Static } from '@sinclair/typebox';
 import type { ConnectedMcpServer, RuntimeContext } from '../../ports/agent.ts';
 import type { ConnectedApp } from '../../ports/integrations.ts';
 import { configFile } from './config-file.ts';
+import { thresholdsSchema, validateThresholds } from './thresholds.ts';
 
 export const clientsFolder = 'clients';
 
@@ -25,7 +26,7 @@ export const clientSchema = Type.Object(
       ),
     ),
     dataSources: Type.Optional(names),
-    thresholds: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    thresholds: Type.Optional(thresholdsSchema),
     inboxes: Type.Optional(names),
   },
   { additionalProperties: false },
@@ -53,6 +54,7 @@ export async function loadClients(root: string, problem: (path: string, reason: 
         clientSchema,
         await readFile(path, 'utf8'),
       );
+      validateThresholds(fields.thresholds);
       const name = basename(file.name, '.md');
       clients.set(name, { ...fields, name, brief: body });
     } catch (error) {
@@ -76,7 +78,7 @@ function owns(client: ClientConfig, service: string[], accounts: Array<string | 
 const appOwned = (client: ClientConfig, app: ConnectedApp) =>
   owns(client, [app.slug, app.name], [app.accountEmail ?? undefined, app.accountName ?? undefined]);
 
-const serverOwned = (client: ClientConfig, server: ConnectedMcpServer) =>
+export const serverOwned = (client: ClientConfig, server: ConnectedMcpServer) =>
   owns(client, [server.service, server.name], [server.accountName]);
 
 type WallInput = Pick<

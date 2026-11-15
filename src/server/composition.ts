@@ -130,6 +130,7 @@ import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
 import { createClientBudget } from './agents/client-budget.ts';
+import { createWatchers } from './agents/watchers.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -3059,9 +3060,21 @@ async function initializeApplication(
       clearTimeout(timer);
     }
   }
-  app.addHook('onReady', async () => activity.start());
+  const watchers = createWatchers({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    servers: discovered.servers,
+    call: (args) => discovered.execute('CONNECTED_MCP_CALL', args),
+  });
+  let stopWatchers: (() => Promise<void>) | undefined;
+  app.addHook('onReady', async () => {
+    activity.start();
+    stopWatchers = watchers.start();
+  });
   app.addHook('onClose', async () => {
     stopConnectionInventory();
+    await stopWatchers?.();
     const failures: unknown[] = [];
     for (const close of [
       () => adapters.integrationBrowser?.close(),
