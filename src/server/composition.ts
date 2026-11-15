@@ -117,7 +117,7 @@ import { createPiMemoryCurator } from '../providers/pi/memory-curator.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { coreSkills } from '../runtime/prompt.ts';
-import { toolDefinitions } from '../runtime/tools.ts';
+import { mcpNamespaces, toolDefinitions } from '../runtime/tools.ts';
 import { createApp } from './app.ts';
 import { credentialRequestKey } from './access.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
@@ -129,6 +129,7 @@ import { createCommunication, publicText } from './communication.ts';
 import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
+import { createClientBudget } from './agents/client-budget.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
 import { createProactivity } from './proactivity.ts';
@@ -889,8 +890,11 @@ async function initializeApplication(
   const cards = createCards({ pool, ownerId, registry: () => agents.registry() });
   const agents = createAgentBinding({
     knownTools: Object.keys(toolDefinitions),
-    cardAgent: cards.agentFor,
+    namespaces: (servers) => mcpNamespaces(servers).map(({ namespace }) => namespace),
+    card: cards.cardFor,
+    wallRecords: cards.wallRecords,
   });
+  const clientBudget = createClientBudget({ pool, ownerId, registry: () => agents.registry() });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -1135,6 +1139,7 @@ async function initializeApplication(
   });
   await tasks.initialize();
   await cards.initialize();
+  await clientBudget.initialize();
   async function describeModelChoice(input: Record<string, unknown>) {
     const models = adapters.models;
     if (!models) return undefined;
@@ -2148,6 +2153,7 @@ async function initializeApplication(
               ).rowCount,
             ));
         const agentBinding = await agents.bind(context);
+        await clientBudget.admit(context, agentBinding.agent?.wall?.client);
         const run = () =>
           ledger.withTurn(
             context.turnId,

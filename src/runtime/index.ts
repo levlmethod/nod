@@ -429,6 +429,8 @@ export function createAgentRuntime(dependencies: {
           throw new Error(
             `The ${context.agent.title} agent can't use ${name}. Start a task for the agent that owns this work.`,
           );
+        const walled = context.agent?.wall?.refuse(name, params);
+        if (walled) throw new Error(walled);
         if (context.proactivity) {
           const safe =
             name === 'read_source' ||
@@ -667,7 +669,12 @@ export function createAgentRuntime(dependencies: {
         completed = screened = true;
         return { status };
       }
-      if (dependencies.prepareMemory && !overBudget() && !context.spendingLimitReached) {
+      if (
+        dependencies.prepareMemory &&
+        !context.agent?.wall &&
+        !overBudget() &&
+        !context.spendingLimitReached
+      ) {
         context.memoryBrief = await untilAborted(
           dependencies.prepareMemory(
             context,

@@ -1,9 +1,9 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 import { Type, type Static } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
-import { parse } from 'yaml';
-import type { RuntimeContext } from '../../ports/agent.ts';
+import type { ConnectedMcpServer, RuntimeContext } from '../../ports/agent.ts';
+import { clientsFolder, loadClients, wallCard, type ClientConfig } from './clients.ts';
+import { configFile } from './config-file.ts';
 
 const names = Type.Array(Type.String({ minLength: 1 }));
 
@@ -48,6 +48,7 @@ export type TeamConfig = Static<typeof teamSchema> & { name: string; instruction
 export type AgentRegistry = {
   agents: Map<string, AgentConfig>;
   teams: Map<string, TeamConfig>;
+  clients: Map<string, ClientConfig>;
   problems: Array<{ path: string; reason: string }>;
 };
 
@@ -61,23 +62,16 @@ const fallbackRouter = {
 };
 const teamFile = 'team.md';
 
-function document(text: string) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
-  if (!match) throw new Error('The file has no frontmatter block between --- lines.');
-  return { fields: (parse(match[1]) ?? {}) as unknown, body: match[2].trim() };
-}
-
-function validated<T>(schema: Parameters<typeof Value.Check>[0], fields: unknown): T {
-  if (Value.Check(schema, fields)) return fields as T;
-  const error = Value.Errors(schema, fields).First();
-  throw new Error(`${error?.path || 'frontmatter'}: ${error?.message ?? 'is invalid'}.`);
-}
-
 export async function loadAgentRegistry(
   root: string,
   knownTools?: readonly string[],
 ): Promise<AgentRegistry> {
-  const registry: AgentRegistry = { agents: new Map(), teams: new Map(), problems: [] };
+  const registry: AgentRegistry = {
+    agents: new Map(),
+    teams: new Map(),
+    clients: new Map(),
+    problems: [],
+  };
   const problem = (path: string, reason: string) =>
     registry.problems.push({ path: relative(root, path) || path, reason });
   let entries;
@@ -87,8 +81,10 @@ export async function loadAgentRegistry(
     problem(root, `The agent config folder could not be read: ${(error as Error).message}`);
     return registry;
   }
+  registry.clients = await loadClients(root, problem);
   for (const entry of entries) {
     const path = join(root, entry.name);
+    if (entry.name === clientsFolder) continue;
     if (entry.isFile() && entry.name.endsWith('.md'))
       problem(path, 'Agent files belong in a team folder with a team.md file.');
     if (!entry.isDirectory()) continue;
@@ -110,18 +106,18 @@ export async function loadAgentRegistry(
     for (const file of files) {
       const filePath = join(path, file.name);
       try {
-        const { fields, body } = document(await readFile(filePath, 'utf8'));
-        if (file.name === teamFile)
-          team = {
-            ...validated<Static<typeof teamSchema>>(teamSchema, fields),
-            name: entry.name,
-            instructions: body,
-          };
-        else {
+        const text = await readFile(filePath, 'utf8');
+        if (file.name === teamFile) {
+          const { fields, body } = configFile<Static<typeof teamSchema>>(teamSchema, text);
+          team = { ...fields, name: entry.name, instructions: body };
+        } else {
           const name = basename(file.name, '.md');
           if (registry.agents.has(name))
             throw new Error(`Another team already has an agent named ${name}.`);
-          const config = validated<Static<typeof agentSchema>>(agentSchema, fields);
+          const { fields: config, body } = configFile<Static<typeof agentSchema>>(
+            agentSchema,
+            text,
+          );
           const unknown = config.tools.filter(
             (tool) => knownTools && !tool.startsWith('mcp__') && !knownTools.includes(tool),
           );
@@ -167,7 +163,10 @@ function roster(registry: AgentRegistry) {
         : '';
     })
     .filter(Boolean);
-  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead.\n${teams.join('\n')}`;
+  const clients = [...registry.clients.values()]
+    .map((client) => `- ${client.name}: ${client.title}`)
+    .join('\n');
+  return `Start every card with agent set to the one agent that owns it, chosen from the team routing descriptions below, client set to the one client the work is for, and estimateMinutes in agent minutes. Give work you can't place more precisely to the team's lead. Take the client from the owner's words; when they don't make it clear, ask the owner which client with ask_user before starting the card.\n${teams.join('\n')}\nClients:\n${clients || 'none yet, so tell the owner a client config needs adding under agents/clients/'}`;
 }
 
 type BindingContext = Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>;
@@ -205,9 +204,21 @@ export function bindAgent(
   };
 }
 
+type WallContext = BindingContext &
+  Partial<
+    Pick<RuntimeContext, 'connectedApps' | 'mcpServers' | 'tasks' | 'relatedConversation'>
+  > & {
+    history?: RuntimeContext['history'];
+  };
+
 export function createAgentBinding(options: {
   knownTools: readonly string[];
-  cardAgent: (sessionId: string) => Promise<string | undefined>;
+  namespaces: (servers: ConnectedMcpServer[]) => string[];
+  card: (sessionId: string) => Promise<{ agent: string; client: string | null } | undefined>;
+  wallRecords: (
+    sessionId: string,
+    client: string | null,
+  ) => Promise<{ sessionTurns: ReadonlySet<string>; clientCards: ReadonlySet<string> }>;
   root?: string;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
@@ -230,11 +241,22 @@ export function createAgentBinding(options: {
   void load();
   return {
     registry: load,
-    bind: async (context: BindingContext) => {
+    bind: async (context: WallContext): Promise<Partial<RuntimeContext>> => {
       if (context.proactivity) return {};
       if (context.sessionId === context.threadId) return bindAgent(await load(), context);
-      const cardAgent = await options.cardAgent(context.sessionId);
-      return cardAgent ? bindAgent(await load(), context, cardAgent) : {};
+      const card = await options.card(context.sessionId);
+      if (!card) return {};
+      const registry = await load();
+      const { agent } = bindAgent(registry, context, card.agent);
+      return wallCard(
+        { ...context, history: context.history ?? [], agent: agent! },
+        {
+          client: card.client,
+          clients: registry.clients,
+          namespaces: options.namespaces,
+          ...(await options.wallRecords(context.sessionId, card.client)),
+        },
+      );
     },
   };
 }

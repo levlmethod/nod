@@ -174,7 +174,13 @@ export interface RuntimeContext {
   credentialRequests?: Array<
     Pick<CredentialRequest, 'turnId' | 'origin' | 'label' | 'kind' | 'status'>
   >;
-  agent?: { name: string; title: string; tools: readonly string[]; instructions: string };
+  agent?: {
+    name: string;
+    title: string;
+    tools: readonly string[];
+    instructions: string;
+    wall?: { client: string; refuse(name: string, params: unknown): string | undefined };
+  };
   taskContext?: {
     id: string;
     title: string;

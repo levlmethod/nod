@@ -7,6 +7,11 @@ import test from 'node:test';
 import type { Agent, AgentSessionOptions, AgentTool, RuntimeContext } from '../src/ports/agent.ts';
 import { createAgentRuntime } from '../src/runtime/index.ts';
 import { bindAgent, createAgentBinding, loadAgentRegistry } from '../src/server/agents/registry.ts';
+import { wallCard } from '../src/server/agents/clients.ts';
+import { mcpNamespaces } from '../src/runtime/tools.ts';
+
+const namespaces = (servers: NonNullable<RuntimeContext['mcpServers']>) =>
+  mcpNamespaces(servers).map(({ namespace }) => namespace);
 import { fakeComputer, fakeWorkspace } from './runtime-fixtures.ts';
 
 async function configRoot(files: Record<string, string>) {
@@ -147,7 +152,9 @@ test('without NOD_AGENTS_ROOT the main chat runs unbound, as upstream Nod does',
   const threadId = randomUUID();
   const binding = createAgentBinding({
     knownTools: ['task'],
-    cardAgent: async () => 'growth-analyst',
+    namespaces,
+    card: async () => ({ agent: 'growth-analyst', client: 'rkmd' }),
+    wallRecords: async () => ({ sessionTurns: new Set(), clientCards: new Set() }),
     root: '',
   });
   assert.deepEqual(await binding.bind({ threadId, sessionId: threadId }), {});
@@ -158,6 +165,8 @@ test('without NOD_AGENTS_ROOT the main chat runs unbound, as upstream Nod does',
 async function runAs(
   agent: RuntimeContext['agent'],
   run: (tools: Map<string, AgentTool>, options: AgentSessionOptions) => Promise<void>,
+  extra: Partial<RuntimeContext> = {},
+  prepareMemory?: () => Promise<undefined>,
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'nod-agent-session-'));
   const threadId = randomUUID();
@@ -180,6 +189,7 @@ async function runAs(
     integration: async () => ({}),
     manage: async () => ({}),
     ...(agent ? { agent } : {}),
+    ...extra,
   };
   const session: Agent = {
     open: async (options) => ({
@@ -194,6 +204,7 @@ async function runAs(
     agent: session,
     computer: fakeComputer(),
     workspace: fakeWorkspace(),
+    ...(prepareMemory ? { prepareMemory } : {}),
   });
   try {
     await runtime.runTurn(context);
@@ -233,6 +244,186 @@ test('a session with no agent keeps every upstream tool', async () => {
   assert.ok(checked);
 });
 
+const clientFile = (title: string, connections: string, brief: string) => `---
+title: ${title}
+budget:
+  monthlyUsd: 500
+connections:
+${connections}
+dataSources: [ga4]
+---
+${brief}
+`;
+
+const clientConfigs = {
+  'clients/rkmd.md': clientFile(
+    'RKMD',
+    '  - service: googleanalytics\n    account: ads@rkmd.example',
+    'RKMD sells clinic services. Its ROAS target is 3.1.',
+  ),
+  'clients/formulaic.md': clientFile(
+    'Formulaic',
+    '  - service: googleanalytics\n    account: data@formulaic.example\n  - service: krowdit\n    account: formulaic',
+    'Formulaic sells supplements. Its launch is secret until March.',
+  ),
+};
+
+test('client configs load from the clients folder and a broken one is reported with its reason', async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'growth/team.md': team('growth-lead'),
+    'growth/growth-lead.md': agentFile(['task']),
+    ...clientConfigs,
+    'clients/krowdit.md': `---
+title: Krowdit
+---
+`,
+  });
+  try {
+    const registry = await loadAgentRegistry(root);
+    assert.deepEqual([...registry.clients.keys()].sort(), ['formulaic', 'rkmd']);
+    assert.equal(registry.clients.get('rkmd')?.budget.monthlyUsd, 500);
+    assert.match(registry.clients.get('formulaic')?.brief ?? '', /launch is secret/);
+    assert.deepEqual([...registry.teams.keys()].sort(), ['core', 'growth']);
+    assert.equal(registry.problems.length, 1);
+    assert.match(registry.problems[0]!.path, /clients\/krowdit\.md$/);
+    assert.match(registry.problems[0]!.reason, /budget/);
+    const chat = bindAgent(registry, { threadId: 't', sessionId: 't' }).agent;
+    assert.match(chat?.instructions ?? '', /- rkmd: RKMD/);
+    assert.match(chat?.instructions ?? '', /ask the owner which client/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const app = (connectionId: string, account: string) =>
+  ({
+    slug: 'googleanalytics',
+    name: 'Google Analytics',
+    status: 'connected',
+    connectionId,
+    accountEmail: account,
+    access: ['api'],
+  }) as NonNullable<RuntimeContext['connectedApps']>[number];
+
+test('a card sees only its own client: other clients’ connections, memory, chat and cards are walled off', async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task']),
+    ...clientConfigs,
+  });
+  try {
+    const registry = await loadAgentRegistry(root);
+    const rkmdCard = randomUUID();
+    const formulaicCard = randomUUID();
+    const ownTurn = randomUUID();
+    const server = (connectionId: string, accountName: string) => ({
+      connectionId,
+      pathId: 'p',
+      service: 'krowdit',
+      name: 'Krowdit',
+      accountName,
+      tools: [{ name: 'growth_ga4_run_report', inputSchema: { type: 'object' } }],
+    });
+    const walled = wallCard(
+      {
+        agent: {
+          name: 'growth-analyst',
+          title: 'Growth Analyst',
+          tools: ['apps', 'task', 'manage_personal_context', 'mcp__Krowdit__growth_ga4_run_report'],
+          instructions: 'Investigate.',
+        },
+        connectedApps: [
+          app('rkmd-ga4', 'ads@rkmd.example'),
+          app('formulaic-ga4', 'data@formulaic.example'),
+        ],
+        mcpServers: [server('krowdit-formulaic', 'formulaic')] as RuntimeContext['mcpServers'],
+        history: [
+          { role: 'user', text: 'Formulaic launch is in March', turnId: null },
+          { role: 'assistant', text: 'Working on RKMD.', turnId: ownTurn },
+        ],
+        relatedConversation: [{ role: 'user', text: 'Formulaic margins are 60%' }],
+        tasks: [{ id: rkmdCard }, { id: formulaicCard }] as RuntimeContext['tasks'],
+      },
+      {
+        client: 'rkmd',
+        clients: registry.clients,
+        sessionTurns: new Set([ownTurn]),
+        clientCards: new Set([rkmdCard]),
+        namespaces,
+      },
+    );
+    assert.deepEqual(
+      walled.connectedApps?.map((item) => item.connectionId),
+      ['rkmd-ga4'],
+    );
+    assert.deepEqual(walled.mcpServers, []);
+    assert.equal(walled.memory, '');
+    assert.equal(walled.relatedConversation, undefined);
+    assert.deepEqual(
+      walled.history?.map((item) => item.text),
+      ['Working on RKMD.'],
+    );
+    assert.deepEqual(
+      walled.tasks?.map((task) => task.id),
+      [rkmdCard],
+    );
+    assert.match(walled.agent.instructions, /ROAS target is 3\.1/);
+    assert.doesNotMatch(walled.agent.instructions, /launch is secret/);
+
+    let memoryPrepared = false;
+    const outcomes: string[] = [];
+    await runAs(
+      walled.agent,
+      async (tools, options) => {
+        assert.equal(tools.has('mcp__Krowdit__growth_ga4_run_report'), false);
+        const attempt = async (name: string, params: unknown) => {
+          try {
+            await options.runTool(name, params, async () => ({
+              content: [{ type: 'text', text: 'ran' }],
+            }));
+            outcomes.push(`${name}: ran`);
+          } catch (error) {
+            outcomes.push(`${name}: ${(error as Error).message}`);
+          }
+        };
+        await attempt('apps', {
+          action: 'GOOGLEANALYTICS_RUN_REPORT',
+          args: { connectionId: 'rkmd-ga4' },
+        });
+        await attempt('apps', {
+          action: 'GOOGLEANALYTICS_RUN_REPORT',
+          args: { connectionId: 'formulaic-ga4' },
+        });
+        await attempt('apps', { action: 'GOOGLEANALYTICS_RUN_REPORT', args: {} });
+        await attempt('mcp__Krowdit__growth_ga4_run_report', {});
+        await attempt('manage_personal_context', {
+          action: 'memory_find',
+          args: { query: 'launch' },
+        });
+        await attempt('task', { action: 'list' });
+        await attempt('task', { action: 'reply', ids: [formulaicCard], message: 'hi' });
+      },
+      walled,
+      async () => {
+        memoryPrepared = true;
+        return undefined;
+      },
+    );
+    assert.equal(memoryPrepared, false);
+    assert.equal(outcomes[0], 'apps: ran');
+    assert.match(outcomes[1]!, /formulaic-ga4 belongs to Formulaic, not RKMD/);
+    assert.match(outcomes[2]!, /must name the connectionId.*rkmd-ga4/);
+    assert.match(outcomes[3]!, /isn't one of RKMD's connections/);
+    assert.match(outcomes[4]!, /memory, history.*shared across every client/);
+    assert.match(outcomes[5]!, /holds every client's cards/);
+    assert.match(outcomes[6]!, /isn't a card for RKMD/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 const analyst = `---
 title: Growth Analyst
 role: Finds why a client's growth metrics moved.
@@ -266,6 +457,7 @@ routing: Owns client growth metrics, traffic and conversion questions.
 ---
 `,
       'growth/growth-analyst.md': analyst,
+      ...clientConfigs,
     });
     const db = await import('../src/server/db.ts');
     const thread = await import('../src/server/thread.ts');
@@ -338,7 +530,7 @@ routing: Owns client growth metrics, traffic and conversion questions.
         /not an agent that can own a card/,
       );
       await assert.rejects(
-        tasks.execute(turn, start({ agent: 'growth-analyst' }), messageId),
+        tasks.execute(turn, start({ agent: 'growth-analyst', client: 'rkmd' }), messageId),
         /estimateMinutes/,
       );
       assert.equal((await db.pool.query('SELECT 1 FROM tasks')).rowCount, 0);
@@ -347,11 +539,33 @@ routing: Owns client growth metrics, traffic and conversion questions.
       assert.match(chat.agent?.instructions ?? '', /Owns client growth metrics/);
     });
 
+    await t.test('a card without a known client cannot start', async () => {
+      const { turn, messageId } = await ask('Look into conversions.');
+      await assert.rejects(
+        tasks.execute(turn, start({ agent: 'growth-analyst', estimateMinutes: 30 }), messageId),
+        /needs the one client.*formulaic, rkmd/,
+      );
+      await assert.rejects(
+        tasks.execute(
+          turn,
+          start({ agent: 'growth-analyst', client: 'acme', estimateMinutes: 30 }),
+          messageId,
+        ),
+        /acme is not a client/,
+      );
+      assert.equal((await db.pool.query('SELECT 1 FROM tasks')).rowCount, 0);
+    });
+
     await t.test('a started card records its owner agent and runs as that agent', async () => {
       const { turn, messageId } = await ask('Find out why RKMD conversions dropped.');
       const task = (await tasks.execute(
         turn,
-        start({ agent: 'growth-analyst', estimateMinutes: 45, cardType: 'investigation' }),
+        start({
+          agent: 'growth-analyst',
+          client: 'rkmd',
+          estimateMinutes: 45,
+          cardType: 'investigation',
+        }),
         messageId,
       )) as { id: string };
       const row = (await db.pool.query('SELECT * FROM agent_cards WHERE task_id=$1', [task.id]))
@@ -360,11 +574,11 @@ routing: Owns client growth metrics, traffic and conversion questions.
       assert.equal(row.card_type, 'investigation');
       assert.equal(row.estimate_minutes, 45);
       assert.equal(Number(row.budget_usd), 4);
-      assert.equal(await cards.agentFor(task.id), 'growth-analyst');
+      assert.deepEqual(await cards.cardFor(task.id), { agent: 'growth-analyst', client: 'rkmd' });
       const bound = bindAgent(
         registry,
         { threadId: turn.threadId, sessionId: task.id },
-        await cards.agentFor(task.id),
+        (await cards.cardFor(task.id))?.agent,
       ).agent;
       assert.equal(bound?.name, 'growth-analyst');
       assert.deepEqual(bound?.tools, ['browser', 'apps', 'send_message', 'task']);
@@ -372,13 +586,14 @@ routing: Owns client growth metrics, traffic and conversion questions.
       assert.match(bound?.instructions ?? '', /conclusion, evidence/);
       const binding = createAgentBinding({
         knownTools: [],
-        cardAgent: cards.agentFor,
+        namespaces,
+        card: cards.cardFor,
+        wallRecords: cards.wallRecords,
         root,
       });
-      assert.equal(
-        (await binding.bind({ threadId: turn.threadId, sessionId: task.id })).agent?.name,
-        'growth-analyst',
-      );
+      const walled = (await binding.bind({ threadId: turn.threadId, sessionId: task.id })).agent;
+      assert.equal(walled?.name, 'growth-analyst');
+      assert.equal(walled?.wall?.client, 'rkmd');
       assert.equal(
         (await binding.bind({ threadId: turn.threadId, sessionId: randomUUID() })).agent,
         undefined,
@@ -392,7 +607,7 @@ routing: Owns client growth metrics, traffic and conversion questions.
       const { turn, messageId } = await ask('Check the Formulaic signup drop.');
       const task = (await tasks.execute(
         turn,
-        start({ agent: 'growth-analyst', estimateMinutes: 20 }),
+        start({ agent: 'growth-analyst', client: 'formulaic', estimateMinutes: 20 }),
         messageId,
       )) as { id: string };
       const work = await cardTurn(task.id);
@@ -451,7 +666,7 @@ routing: Owns client growth metrics, traffic and conversion questions.
           /Agents are off/,
         );
         const task = (await plain.execute(turn, start({}), messageId)) as { id: string };
-        assert.equal(await off.agentFor(task.id), undefined);
+        assert.equal(await off.cardFor(task.id), undefined);
         const work = await cardTurn(task.id);
         await plain.execute(
           work,
@@ -469,7 +684,7 @@ routing: Owns client growth metrics, traffic and conversion questions.
       const { turn, messageId } = await ask('Should we change the RKMD Taboola bids?');
       const task = (await tasks.execute(
         turn,
-        start({ agent: 'growth-analyst', estimateMinutes: 15 }),
+        start({ agent: 'growth-analyst', client: 'rkmd', estimateMinutes: 15 }),
         messageId,
       )) as { id: string };
       const work = await cardTurn(task.id);
@@ -490,5 +705,73 @@ routing: Owns client growth metrics, traffic and conversion questions.
         result: 'Can I lower the RKMD Taboola bids by 10%?',
       });
     });
+
+    await t.test(
+      'a client at its monthly cap gets no new card turns and the reason is recorded',
+      async () => {
+        const { createClientBudget } = await import('../src/server/agents/client-budget.ts');
+        const { createLedger } = await import('../src/server/ledger.ts');
+        await createLedger({ pool: db.pool, ownerId }).initialize();
+        const budget = createClientBudget({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+        });
+        await budget.initialize();
+        const card = async (client: string) => {
+          const { turn, messageId } = await ask(`Check ${client} spend.`);
+          const task = (await tasks.execute(
+            turn,
+            start({ agent: 'growth-analyst', client, estimateMinutes: 10 }),
+            messageId,
+          )) as { id: string };
+          return { task, work: await cardTurn(task.id) };
+        };
+        const rkmd = await card('rkmd');
+        const formulaic = await card('formulaic');
+        const usage = (turnId: string, sessionId: string, cost: number, createdAt = 'now()') =>
+          db.pool.query(
+            `INSERT INTO model_usage(id,owner_id,turn_id,session_id,cost_usd,created_at)
+           VALUES($1,$2,$3,$4,$5,${createdAt})`,
+            [randomUUID(), ownerId, turnId, sessionId, cost],
+          );
+        await usage(rkmd.work.turnId, rkmd.task.id, 300);
+        await usage(rkmd.work.turnId, rkmd.task.id, 400, "now()-interval '45 days'");
+        await usage(formulaic.work.turnId, formulaic.task.id, 120);
+        await budget.admit({ turnId: rkmd.work.turnId }, 'rkmd');
+        await usage(rkmd.work.turnId, rkmd.task.id, 200.5);
+        await assert.rejects(
+          budget.admit({ turnId: rkmd.work.turnId }, 'rkmd'),
+          /RKMD has used \$500\.50 of its \$500\.00 monthly model budget/,
+        );
+        await budget.admit({ turnId: formulaic.work.turnId }, 'formulaic');
+        await budget.admit({ turnId: rkmd.work.turnId, currentMessageId: randomUUID() }, 'rkmd');
+        const pause = (
+          await db.pool.query(
+            'SELECT client,spent_usd,cap_usd,reason,turn_id FROM client_budget_pauses',
+          )
+        ).rows;
+        assert.equal(pause.length, 1);
+        assert.equal(pause[0].client, 'rkmd');
+        assert.equal(pause[0].spent_usd, 500.5);
+        assert.equal(pause[0].turn_id, rkmd.work.turnId);
+        assert.match(pause[0].reason, /monthly model budget/);
+        const spend = await budget.spend();
+        assert.deepEqual(
+          spend
+            .sort((a, b) => a.client.localeCompare(b.client))
+            .map(({ client, spentUsd, capUsd, reason }) => ({
+              client,
+              spentUsd,
+              capUsd,
+              paused: Boolean(reason),
+            })),
+          [
+            { client: 'formulaic', spentUsd: 120, capUsd: 500, paused: false },
+            { client: 'rkmd', spentUsd: 500.5, capUsd: 500, paused: true },
+          ],
+        );
+      },
+    );
   },
 );

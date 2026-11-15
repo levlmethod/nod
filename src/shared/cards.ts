@@ -14,6 +14,7 @@ export type CardResult =
 
 export const cardStartFields = {
   agent: z.string().trim().min(1).optional(),
+  client: z.string().trim().min(1).optional(),
   cardType: z.string().trim().min(1).max(60).optional(),
   estimateMinutes: z.number().int().positive().max(10_000).optional(),
 };
@@ -25,6 +26,7 @@ export const cardFinishFields = {
 
 export const cardStartParams = {
   agent: Type.Optional(Type.String({ minLength: 1 })),
+  client: Type.Optional(Type.String({ minLength: 1 })),
   cardType: Type.Optional(Type.String({ minLength: 1, maxLength: 60 })),
   estimateMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
 };

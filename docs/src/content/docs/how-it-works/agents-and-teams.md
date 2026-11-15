@@ -52,7 +52,7 @@ Lead the growth team. Split work into cards for the right analyst.
 | `model`       | No       | The model the agent should use. Not used yet.                                                                                              |
 | `skills`      | No       | Skills the agent must follow. Not used yet.                                                                                                |
 | `cardSkills`  | No       | Extra skills per card type. Not used yet.                                                                                                  |
-| `connections` | No       | The app connections the agent may use. Not used yet.                                                                                       |
+| `connections` | No       | The app connections the agent may use. Not used yet; a card's connections come from its client.                                            |
 | `budget`      | No       | `cardUsd`, the spend on one card. Saved on each card the agent owns; not enforced yet.                                                     |
 | `schedules`   | No       | The agent's recurring schedules. Not used yet.                                                                                             |
 | `knowledge`   | No       | Knowledge collections. Reserved for phase 2 and not used yet.                                                                              |
@@ -64,13 +64,13 @@ Nod reads the folder again at the start of every turn, so an edit takes effect o
 
 The main chat runs as the `router` agent from the `core` team. Its session gets only the tools listed in `router.md`, and a call to any other tool is refused with a reason, and it opens without the workspace, web search or codemode tools, so it can't browse, read apps or run commands. It turns each request into a task for the agent that owns the work, answers status questions from the task ledger and asks the owner only when the client or goal is unclear. Its instructions are added to the end of the system prompt.
 
-The Router sees every agent except itself, grouped by team with each team's `routing` description and each agent's `role`, and picks the one agent that owns the work. It must start each card with `agent` set to that agent's name and `estimateMinutes`, the agent minutes the work should take, and may set `cardType`. A card started without them, or for the Router itself or an unknown agent, is refused with the reason and the list of agents.
+The Router sees every agent except itself, grouped by team with each team's `routing` description and each agent's `role`, and picks the one agent that owns the work. It must start each card with `agent` set to that agent's name, `client` set to the client the work is for and `estimateMinutes`, the agent minutes the work should take, and may set `cardType`. Clients and the wall around each card are described in [Clients and walls](/how-it-works/clients-and-walls/). A card started without them, or for the Router itself or an unknown agent, is refused with the reason and the list of agents.
 
 If `router.md` is missing or invalid, the main chat still runs as a Router, with only `task`, `ask_user` and `send_message`, and tells the owner its config needs fixing. The problem is logged.
 
 ## Cards
 
-A card is a task with one owner agent. Its details are kept in the `agent_cards` table, keyed by task ID: the owner agent, card type, estimate in agent minutes, the agent's `budget.cardUsd` and the result.
+A card is a task with one owner agent. Its details are kept in the `agent_cards` table, keyed by task ID: the owner agent, client, card type, estimate in agent minutes, the agent's `budget.cardUsd` and the result.
 
 Every turn of the card's session runs as its owner agent, with that agent's tools and instructions and, like the Router, without the workspace, web search or codemode tools, so the owner's replies to a card reach the agent working it. If the agent's config is later removed or broken, the card's session keeps only `task`, `ask_user` and `send_message` and closes the card with a question asking the owner to fix it.
 

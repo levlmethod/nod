@@ -2,7 +2,12 @@ import type { Pool, PoolClient } from 'pg';
 import { cardRefusal, cardResult, cardResultText } from '../../shared/cards.ts';
 import { cardOwners, type AgentRegistry } from './registry.ts';
 
-type StartRequest = { agent?: string; cardType?: string; estimateMinutes?: number };
+type StartRequest = {
+  agent?: string;
+  client?: string;
+  cardType?: string;
+  estimateMinutes?: number;
+};
 type FinishRequest = { result?: string; card?: unknown; question?: string };
 
 export type CardHooks = {
@@ -32,11 +37,13 @@ export function createCards(options: {
         result jsonb,
         created_at timestamptz NOT NULL DEFAULT now()
       );
+      ALTER TABLE agent_cards ADD COLUMN IF NOT EXISTS client text;
+      CREATE INDEX IF NOT EXISTS agent_cards_client ON agent_cards(owner_id,client);
     `);
   }
 
   const start: CardHooks['start'] = async (client, { chat, taskId, request }) => {
-    const named = request.agent ?? request.cardType ?? request.estimateMinutes;
+    const named = request.agent ?? request.client ?? request.cardType ?? request.estimateMinutes;
     if (!chat) {
       if (named !== undefined)
         throw cardRefusal('Only the Router starts cards. Start this as a plain task.');
@@ -63,17 +70,29 @@ export function createCards(options: {
       throw cardRefusal(
         `${request.agent} is not an agent that can own a card. Use one of: ${names}.`,
       );
+    const clients = [...registry.clients.keys()].join(', ');
+    if (!registry.clients.size)
+      throw cardRefusal(
+        'No client is set up yet. Add a client config under agents/clients/ before starting cards.',
+      );
+    if (!request.client)
+      throw cardRefusal(
+        `A card needs the one client it is for. Name it with client, one of: ${clients}. Ask the owner if their words don't say which.`,
+      );
+    if (!registry.clients.has(request.client))
+      throw cardRefusal(`${request.client} is not a client. Use one of: ${clients}.`);
     if (!request.estimateMinutes)
       throw cardRefusal(
         'A card needs estimateMinutes: how many agent minutes the work should take.',
       );
     await client.query(
-      `INSERT INTO agent_cards(task_id,owner_id,agent,card_type,estimate_minutes,budget_usd)
-       VALUES($1,$2,$3,$4,$5,$6)`,
+      `INSERT INTO agent_cards(task_id,owner_id,agent,client,card_type,estimate_minutes,budget_usd)
+       VALUES($1,$2,$3,$4,$5,$6,$7)`,
       [
         taskId,
         ownerId,
         owner.name,
+        request.client,
         request.cardType ?? 'work',
         request.estimateMinutes,
         owner.budget?.cardUsd ?? null,
@@ -105,14 +124,31 @@ export function createCards(options: {
     return cardResultText(result);
   };
 
-  async function agentFor(sessionId: string) {
+  async function cardFor(sessionId: string) {
     return (
-      await pool.query<{ agent: string }>(
-        `SELECT c.agent FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
+      await pool.query<{ agent: string; client: string | null }>(
+        `SELECT c.agent,c.client FROM agent_cards c JOIN tasks t ON t.id=c.task_id AND t.owner_id=c.owner_id
          WHERE c.owner_id=$1 AND t.session_id=$2`,
         [ownerId, sessionId],
       )
-    ).rows[0]?.agent;
+    ).rows[0];
+  }
+
+  async function wallRecords(sessionId: string, client: string | null) {
+    const [turns, cards] = await Promise.all([
+      pool.query<{ id: string }>('SELECT id FROM turns WHERE owner_id=$1 AND session_id=$2', [
+        ownerId,
+        sessionId,
+      ]),
+      pool.query<{ task_id: string }>(
+        'SELECT task_id FROM agent_cards WHERE owner_id=$1 AND client=$2',
+        [ownerId, client],
+      ),
+    ]);
+    return {
+      sessionTurns: new Set(turns.rows.map((row) => row.id)),
+      clientCards: new Set(cards.rows.map((row) => row.task_id)),
+    };
   }
 
   async function isCardTurn(turnId: string) {
@@ -127,5 +163,11 @@ export function createCards(options: {
     );
   }
 
-  return { initialize, hooks: { start, finish } satisfies CardHooks, agentFor, isCardTurn };
+  return {
+    initialize,
+    hooks: { start, finish } satisfies CardHooks,
+    cardFor,
+    wallRecords,
+    isCardTurn,
+  };
 }
