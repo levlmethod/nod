@@ -129,6 +129,7 @@ import { createCommunication, publicText } from './communication.ts';
 import { logFailure } from './failure-log.ts';
 import { createAgentBinding } from './agents/registry.ts';
 import { createCards } from './agents/cards.ts';
+import { createBoard } from './agents/board.ts';
 import { createClientBudget } from './agents/client-budget.ts';
 import { createTrust } from './trust.ts';
 import { untrustedBlock } from '../shared/untrusted.ts';
@@ -2850,6 +2851,14 @@ async function initializeApplication(
     updatesEmail: onboardingProfile.available,
   }).register(app);
   ledger.registerRoutes(app);
+  createBoard({
+    pool,
+    ownerId,
+    registry: () => agents.registry(),
+    tasks: () => tasks.read(),
+    cards,
+    spend: clientBudget.spend,
+  }).registerRoutes(app);
   activityLog.registerRoutes(app);
   registerSpeechSettings(app, {
     speech,

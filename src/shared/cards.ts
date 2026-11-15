@@ -75,6 +75,8 @@ export const cardActionParams = [
 export type CardView = {
   taskId: string;
   agent: string;
+  client: string | null;
+  budgetUsd: number | null;
   cardType: string;
   parentTaskId: string | null;
   blockedBy: string[];

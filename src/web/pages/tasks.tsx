@@ -53,7 +53,7 @@ const closed = (task: Task) => task.status === 'done' || task.status === 'cancel
 const showMessage = (messageId: string) =>
   window.dispatchEvent(new window.CustomEvent('nod:focus-message', { detail: { messageId } }));
 
-function TaskActivity({ id }: { id: string }) {
+export function TaskActivity({ id }: { id: string }) {
   const data = usePageData<TaskDetail>(`/api/tasks/${id}`);
   if (data.error) return <Notice>Could not load activity.</Notice>;
   const rows: Array<TaskDetail['events'][number] & { count: number }> = [];

@@ -1152,5 +1152,155 @@ Write copy in the client's brand voice.
       assert.equal(Math.round(asking!.agentMinutes), 14);
       assert.equal(Math.round(asking!.waitingMinutes), 16);
     });
+
+    await t.test(
+      'the board shows open and recent cards by client and team, with blocked and waiting cards marked, for this owner only',
+      async () => {
+        const Fastify = (await import('fastify')).default;
+        const { registerLocalAccess } = await import('../src/server/access.ts');
+        const { createBoard } = await import('../src/server/agents/board.ts');
+        const { createClientBudget } = await import('../src/server/agents/client-budget.ts');
+        const budget = createClientBudget({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+        });
+        const board = createBoard({
+          pool: db.pool,
+          ownerId,
+          registry: async () => registry,
+          tasks: () => tasks.read(),
+          cards,
+          spend: budget.spend,
+        });
+        const { task: lead } = await routerCard('Plan the Formulaic summer launch.', {
+          title: 'Plan the summer launch',
+          client: 'formulaic',
+          estimateMinutes: 50,
+        });
+        const { task: blocked } = await routerCard('Write the launch email after the plan.', {
+          client: 'formulaic',
+          agent: 'copywriter',
+          blockedBy: [lead.id],
+        });
+        const { task: asking } = await routerCard('Should RKMD move budget to Taboola?');
+        const askingWork = await cardTurn(asking.id);
+        await tasks.execute(
+          askingWork,
+          {
+            action: 'finish',
+            id: asking.id,
+            status: 'done',
+            question: 'Can I move $200 from Meta to Taboola?',
+          },
+          null,
+        );
+        const { task: old } = await routerCard('Old RKMD audit.');
+        await finishCard(await cardTurn(old.id), old.id, 'Audit done.');
+        await db.pool.query("UPDATE tasks SET closed_at=now()-interval '30 days' WHERE id=$1", [
+          old.id,
+        ]);
+        const { task: hidden } = await routerCard("Another owner's card.");
+        await db.pool.query("UPDATE tasks SET owner_id='someone-else' WHERE id=$1", [hidden.id]);
+        await db.pool.query("UPDATE agent_cards SET owner_id='someone-else' WHERE task_id=$1", [
+          hidden.id,
+        ]);
+        const leadWork = await cardTurn(lead.id);
+        await db.pool.query(
+          'INSERT INTO model_usage(id,owner_id,turn_id,session_id,cost_usd) VALUES($1,$2,$3,$4,2.5)',
+          [randomUUID(), ownerId, leadWork.turnId, lead.id],
+        );
+        await cards.act(leadWork, {
+          action: 'ask',
+          id: lead.id,
+          agent: 'copywriter',
+          question: 'Which launch headline tested best?',
+        });
+        await cards.recordAction({
+          taskId: lead.id,
+          actor: 'pm',
+          action: 'nudge',
+          reason: 'The card passed its estimate.',
+        });
+
+        const snapshot = await board.read();
+        assert.equal(snapshot.enabled, true);
+        const placed = new Map(
+          snapshot.clients.flatMap((client) =>
+            client.teams.flatMap((team) =>
+              team.cards.map((card) => [card.id, { client: client.client, team: team.team, card }]),
+            ),
+          ),
+        );
+        assert.equal(placed.get(lead.id)?.client, 'formulaic');
+        assert.equal(placed.get(lead.id)?.team, 'growth');
+        assert.equal(placed.get(lead.id)?.card.spendUsd, 2.5);
+        assert.equal(placed.get(lead.id)?.card.estimateMinutes, 50);
+        assert.equal(placed.get(blocked.id)?.team, 'creative');
+        assert.equal(placed.get(blocked.id)?.card.state, 'blocked');
+        assert.deepEqual(placed.get(blocked.id)?.card.blockers, [
+          { id: lead.id, title: 'Plan the summer launch' },
+        ]);
+        assert.equal(placed.get(asking.id)?.client, 'rkmd');
+        assert.equal(placed.get(asking.id)?.card.state, 'needs_you');
+        assert.notEqual(placed.get(lead.id)?.card.state, 'blocked');
+        assert.notEqual(placed.get(lead.id)?.card.state, 'needs_you');
+        assert.equal(placed.has(old.id), false);
+        assert.equal(placed.has(hidden.id), false);
+        const formulaic = snapshot.clients.find((client) => client.client === 'formulaic');
+        assert.equal(formulaic?.capUsd, 500);
+        assert.ok((formulaic?.spentUsd ?? 0) >= 2.5);
+
+        const detail = await board.card(lead.id);
+        assert.deepEqual(detail.asks, [
+          {
+            agent: 'copywriter',
+            flagged: false,
+            exchanges: [
+              { question: 'Which launch headline tested best?', answer: null, unanswered: false },
+            ],
+          },
+        ]);
+        assert.deepEqual(
+          detail.pmActions.map(({ actor, action, reason }) => ({ actor, action, reason })),
+          [{ actor: 'pm', action: 'nudge', reason: 'The card passed its estimate.' }],
+        );
+        assert.deepEqual(detail.children, []);
+        assert.deepEqual((await board.card(asking.id)).result, {
+          question: 'Can I move $200 from Meta to Taboola?',
+        });
+        await assert.rejects(board.card(hidden.id), /Card not found/);
+
+        const app = Fastify({ logger: false });
+        registerLocalAccess(app, 4310, { key: 'synthetic-local-access' });
+        board.registerRoutes(app);
+        const host = { host: 'localhost:4310' };
+        const signedIn = { ...host, cookie: 'nod-access-4310=synthetic-local-access' };
+        assert.equal((await app.inject({ url: '/api/board', headers: host })).statusCode, 401);
+        assert.equal(
+          (await app.inject({ url: `/api/board/cards/${lead.id}`, headers: host })).statusCode,
+          401,
+        );
+        const listed = await app.inject({ url: '/api/board', headers: signedIn });
+        assert.equal(listed.statusCode, 200);
+        assert.ok(listed.json().clients.length);
+        assert.equal(
+          (await app.inject({ url: `/api/board/cards/${hidden.id}`, headers: signedIn }))
+            .statusCode,
+          404,
+        );
+        await app.close();
+
+        const off = createBoard({
+          pool: db.pool,
+          ownerId,
+          registry: async () => undefined,
+          tasks: () => tasks.read(),
+          cards,
+          spend: budget.spend,
+        });
+        assert.deepEqual(await off.read(), { enabled: false, recentDays: 7, clients: [] });
+      },
+    );
   },
 );

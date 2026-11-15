@@ -7,6 +7,7 @@ import { Apps } from './pages/apps';
 import { Channels } from './pages/channels';
 import { Credentials, Payment } from './pages/credentials';
 import { Scheduled } from './pages/tasks';
+import { Board } from './pages/board';
 import { PreparedWork } from './pages/prepared';
 import { useAppState } from './hooks/use-app-state';
 import { useChatUnread } from './hooks/use-chat-unread';
@@ -270,6 +271,7 @@ function Workspace({
             )}
             {path === '/apps' && <Apps configuration={state?.configuration} onAsk={askInChat} />}
             {path === '/channels' && <Channels />}
+            {path === '/board' && <Board />}
             {path === '/tasks' && (
               <Scheduled onAsk={askInChat} activity={connected ? state?.activity : undefined} />
             )}

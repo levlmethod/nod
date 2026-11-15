@@ -79,6 +79,10 @@ _Avoid_: Alert, incident
 **Brainstorm**:
 A card type with fixed rounds: private ideas, cross-build, devil's advocate, then a top three.
 
+**Board**:
+The page that shows every open and recently closed card by client and team, with blocked and waiting-on-owner cards marked.
+_Avoid_: Dashboard, kanban
+
 ### Approvals
 
 **Tier**:

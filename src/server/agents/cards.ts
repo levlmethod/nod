@@ -83,6 +83,16 @@ export function createCards(options: {
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (owner_id, task_id, to_agent)
       );
+      CREATE TABLE IF NOT EXISTS agent_card_actions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id text NOT NULL,
+        task_id uuid NOT NULL REFERENCES tasks(id),
+        actor text NOT NULL,
+        action text NOT NULL,
+        reason text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS agent_card_actions_task ON agent_card_actions(owner_id,task_id,created_at);
     `);
   }
 
@@ -514,7 +524,7 @@ export function createCards(options: {
   async function read(taskIds?: string[]): Promise<CardView[]> {
     const rows = (
       await pool.query(
-        `SELECT c.task_id,c.agent,c.card_type,c.parent_task_id,c.blocked_by,c.estimate_minutes,
+        `SELECT c.task_id,c.agent,c.client,c.budget_usd,c.card_type,c.parent_task_id,c.blocked_by,c.estimate_minutes,
            ARRAY(SELECT b.id FROM tasks b WHERE b.owner_id=c.owner_id AND b.id=ANY(c.blocked_by) AND ${unsettled('b')}) AS open_blockers,
            COALESCE((SELECT sum(extract(epoch FROM COALESCE(${waitStarted('u')},u.finished_at,CASE WHEN u.status='running' THEN now() END)-u.started_at))
              FROM turns u WHERE u.owner_id=c.owner_id AND u.started_at IS NOT NULL
@@ -535,6 +545,8 @@ export function createCards(options: {
     return rows.map((row) => ({
       taskId: row.task_id,
       agent: row.agent,
+      client: row.client,
+      budgetUsd: row.budget_usd === null ? null : Number(row.budget_usd),
       cardType: row.card_type,
       parentTaskId: row.parent_task_id,
       blockedBy: row.blocked_by,
@@ -554,8 +566,21 @@ export function createCards(options: {
     }));
   }
 
+  async function recordAction(
+    action: { taskId: string; actor: string; action: string; reason: string },
+    client: Pick<PoolClient, 'query'> = pool,
+  ) {
+    const { rowCount } = await client.query(
+      `INSERT INTO agent_card_actions(owner_id,task_id,actor,action,reason)
+       SELECT owner_id,task_id,$3,$4,$5 FROM agent_cards WHERE owner_id=$1 AND task_id=$2`,
+      [ownerId, action.taskId, action.actor, action.action, action.reason],
+    );
+    if (!rowCount) throw cardRefusal(`${action.taskId} is not a card, so no action was recorded.`);
+  }
+
   return {
     initialize,
+    recordAction,
     hooks: { start, finish, closed } satisfies CardHooks,
     cardFor,
     wallRecords,
