@@ -52,7 +52,14 @@ export type AgentRegistry = {
   problems: Array<{ path: string; reason: string }>;
 };
 
-export const routerAgent = 'router';
+const routerAgent = 'router';
+const fallbackRouter = {
+  name: routerAgent,
+  title: 'Router',
+  tools: ['task', 'ask_user', 'send_message'],
+  instructions:
+    'The Router config in agents/core/router.md is missing or invalid, so you run with routing tools only. Start a task for each request, tell the owner the Router config needs fixing, and never do the work yourself.',
+};
 const teamFile = 'team.md';
 
 function document(text: string) {
@@ -67,7 +74,10 @@ function validated<T>(schema: Parameters<typeof Value.Check>[0], fields: unknown
   throw new Error(`${error?.path || 'frontmatter'}: ${error?.message ?? 'is invalid'}.`);
 }
 
-export async function loadAgentRegistry(root: string): Promise<AgentRegistry> {
+export async function loadAgentRegistry(
+  root: string,
+  knownTools?: readonly string[],
+): Promise<AgentRegistry> {
   const registry: AgentRegistry = { agents: new Map(), teams: new Map(), problems: [] };
   const problem = (path: string, reason: string) =>
     registry.problems.push({ path: relative(root, path) || path, reason });
@@ -83,9 +93,15 @@ export async function loadAgentRegistry(root: string): Promise<AgentRegistry> {
     if (entry.isFile() && entry.name.endsWith('.md'))
       problem(path, 'Agent files belong in a team folder with a team.md file.');
     if (!entry.isDirectory()) continue;
-    const files = (await readdir(path, { withFileTypes: true })).filter(
-      (file) => file.isFile() && file.name.endsWith('.md'),
-    );
+    let files;
+    try {
+      files = (await readdir(path, { withFileTypes: true })).filter(
+        (file) => file.isFile() && file.name.endsWith('.md'),
+      );
+    } catch (error) {
+      problem(path, `The team folder could not be read: ${(error as Error).message}`);
+      continue;
+    }
     if (!files.some((file) => file.name === teamFile)) {
       problem(path, 'The team folder has no team.md file.');
       continue;
@@ -106,8 +122,13 @@ export async function loadAgentRegistry(root: string): Promise<AgentRegistry> {
           const name = basename(file.name, '.md');
           if (registry.agents.has(name))
             throw new Error(`Another team already has an agent named ${name}.`);
+          const config = validated<Static<typeof agentSchema>>(agentSchema, fields);
+          const unknown = config.tools.filter(
+            (tool) => knownTools && !tool.startsWith('mcp__') && !knownTools.includes(tool),
+          );
+          if (unknown.length) throw new Error(`tools: ${unknown.join(', ')} is not a Nod tool.`);
           members.push({
-            ...validated<Static<typeof agentSchema>>(agentSchema, fields),
+            ...config,
             name,
             team: entry.name,
             instructions: body,
@@ -133,30 +154,28 @@ export function bindAgent(
   context: Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>,
 ): { agent?: NonNullable<RuntimeContext['agent']> } {
   if (context.sessionId !== context.threadId || context.proactivity) return {};
-  const router = registry.agents.get(routerAgent);
-  if (!router) return {};
-  return {
-    agent: {
-      name: router.name,
-      title: router.title,
-      tools: router.tools,
-      instructions: router.instructions,
-    },
-  };
+  const { name, title, tools, instructions } = registry.agents.get(routerAgent) ?? fallbackRouter;
+  return { agent: { name, title, tools, instructions } };
 }
 
 export function createAgentBinding(
+  knownTools: readonly string[],
   root = process.env.NOD_AGENTS_ROOT || fileURLToPath(new URL('../../../agents/', import.meta.url)),
 ) {
   let reported = '';
-  return async (context: Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>) => {
-    const registry = await loadAgentRegistry(root);
+  const load = async () => {
+    const registry = await loadAgentRegistry(root, knownTools);
     const problems = JSON.stringify(registry.problems);
     if (problems !== reported) {
       reported = problems;
       for (const { path, reason } of registry.problems)
         console.error(JSON.stringify({ event: 'agent_config_rejected', path, reason }));
     }
-    return bindAgent(registry, context);
+    return registry;
   };
+  void load();
+  return async (context: Pick<RuntimeContext, 'threadId' | 'sessionId' | 'proactivity'>) =>
+    context.sessionId === context.threadId && !context.proactivity
+      ? bindAgent(await load(), context)
+      : {};
 }

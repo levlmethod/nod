@@ -425,6 +425,10 @@ export function createAgentRuntime(dependencies: {
       const pending = (async () => {
         assertActive();
         const revision = requestRevision;
+        if (context.agent && !context.agent.tools.includes(name))
+          throw new Error(
+            `The ${context.agent.title} agent can't use ${name}. Start a task for the agent that owns this work.`,
+          );
         if (context.proactivity) {
           const safe =
             name === 'read_source' ||
@@ -807,17 +811,18 @@ export function createAgentRuntime(dependencies: {
               },
             };
           });
-      const role = context.agent
+      const agentPrompt = context.agent
         ? `\nYou are the ${context.agent.title} agent. Your only tools are ${context.agent.tools.join(', ')}.\n${context.agent.instructions}`
         : '';
       const system =
         context.proactivity?.instructions ??
         systemPrompt(workspace, dependencies.skills, context.taskContext, context.background) +
-          role;
+          agentPrompt;
       const compactInstructions = {
         systemPrompt: context.proactivity
           ? system
-          : compactSystemPrompt(workspace, skills, context.taskContext, context.background) + role,
+          : compactSystemPrompt(workspace, skills, context.taskContext, context.background) +
+            agentPrompt,
         ownerContext: compactOwnerContext(context),
       };
       const shared = {

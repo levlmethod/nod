@@ -117,6 +117,7 @@ import { createPiMemoryCurator } from '../providers/pi/memory-curator.ts';
 import { createPublicLinkPreviewProvider } from '../providers/public-web/link-preview.ts';
 import { createAgentRuntime } from '../runtime/index.ts';
 import { coreSkills } from '../runtime/prompt.ts';
+import { toolDefinitions } from '../runtime/tools.ts';
 import { createApp } from './app.ts';
 import { credentialRequestKey } from './access.ts';
 import { createWorkAdmission, createWorkConsumers } from './work-admission.ts';
@@ -884,7 +885,7 @@ async function initializeApplication(
       : undefined;
   };
   const mailCheck = createMailCheck({ curator, decisions });
-  const bindAgent = createAgentBinding();
+  const bindAgent = createAgentBinding(Object.keys(toolDefinitions));
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
     coreSkills,
@@ -2139,7 +2140,7 @@ async function initializeApplication(
                 )
               ).rowCount,
             ));
-        const bound = await bindAgent(context);
+        const agentBinding = await bindAgent(context);
         const run = () =>
           ledger.withTurn(
             context.turnId,
@@ -2147,7 +2148,7 @@ async function initializeApplication(
               runtime
                 .runTurn({
                   ...context,
-                  ...bound,
+                  ...agentBinding,
                   runtimeHost: desktopMode ? 'desktop' : 'server',
                 })
                 .finally(() => proactivity.release(context.turnId)),

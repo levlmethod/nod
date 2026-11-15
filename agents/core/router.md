@@ -7,7 +7,6 @@ tools:
   - send_message
   - set_status
   - react_to_message
-  - manage_personal_context
   - nod_docs
 ---
 

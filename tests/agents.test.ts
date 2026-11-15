@@ -88,13 +88,29 @@ test('a broken agent or team file is reported with its path and reason while val
   }
 });
 
+test('an agent naming a tool that does not exist is rejected with the name', async () => {
+  const root = await configRoot({
+    'core/team.md': team('router'),
+    'core/router.md': agentFile(['task', 'ask_user']),
+    'core/helper.md': agentFile(['task', 'browse']),
+  });
+  try {
+    const registry = await loadAgentRegistry(root, ['task', 'ask_user', 'browser']);
+    assert.ok(registry.agents.has('router'));
+    assert.ok(!registry.agents.has('helper'));
+    assert.match(registry.problems[0]?.reason ?? '', /browse/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a missing config root loads as an empty registry with one problem', async () => {
   const registry = await loadAgentRegistry(join(tmpdir(), `nod-agents-missing-${randomUUID()}`));
   assert.equal(registry.agents.size, 0);
   assert.equal(registry.problems.length, 1);
 });
 
-test('the main chat runs as the Router; task and background sessions do not', async () => {
+test('the main chat runs as the Router, falls back to a routing-only Router when its config is broken, and task and background sessions run unbound', async () => {
   const root = await configRoot({
     'core/team.md': team('router'),
     'core/router.md': agentFile(['task', 'ask_user', 'send_message']),
@@ -114,10 +130,13 @@ test('the main chat runs as the Router; task and background sessions do not', as
       }).agent,
       undefined,
     );
-    assert.equal(
-      bindAgent(await loadAgentRegistry(join(root, 'nowhere')), { threadId, sessionId: threadId })
-        .agent,
-      undefined,
+    const fallback = bindAgent(await loadAgentRegistry(join(root, 'nowhere')), {
+      threadId,
+      sessionId: threadId,
+    }).agent;
+    assert.equal(fallback?.name, 'router');
+    assert.ok(
+      fallback && !fallback.tools.some((tool) => ['browser', 'apps', 'delegate'].includes(tool)),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -185,7 +204,6 @@ test('the Router gets only its allowed tools and no workspace, web or browser', 
       assert.deepEqual([...tools.keys()].sort(), ['ask_user', 'send_message', 'task']);
       assert.equal(options.restricted, true);
       assert.match(options.systemPrompt, /Never do the work yourself\./);
-      assert.match(options.systemPrompt, /Router/);
       checked = true;
     },
   );
