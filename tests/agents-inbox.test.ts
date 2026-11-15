@@ -355,6 +355,22 @@ test(
             text: JSON.stringify({
               messages: [
                 {
+                  id: 'support-3',
+                  threadId: 'support-thread-1',
+                  from: 'Sam <sam@shopper.example>',
+                  subject: 'Refund for a double charge',
+                  snippet: 'Still waiting, and now I see a third charge.',
+                  date: '2026-11-15T14:00:00Z',
+                },
+                {
+                  id: 'support-2',
+                  threadId: 'support-thread-1',
+                  from: 'Formulaic Support <support@formulaic.example>',
+                  subject: 'Re: Refund for a double charge',
+                  snippet: 'We are looking into it.',
+                  date: '2026-11-15T13:30:00Z',
+                },
+                {
                   id: 'support-1',
                   threadId: 'support-thread-1',
                   from: 'Sam <sam@shopper.example>',
@@ -388,7 +404,7 @@ test(
       const card = (await opened()).at(-1);
       assert.equal(card.client, 'formulaic');
       assert.equal(card.agent, 'copywriter');
-      assert.match(card.prompt, /charged twice/);
+      assert.match(card.prompt, /a third charge/);
       assert.match(card.prompt, /support@formulaic\.example/);
     });
 

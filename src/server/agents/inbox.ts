@@ -44,6 +44,7 @@ const contract = `Reply with only JSON. For mail that needs no work from the age
 const perInbox = 20;
 const attempts = 3;
 const key = (inbox: string, threadId: string) => `inbox:${inbox}:${threadId}`;
+const address = (from: string) => /<([^<>]+)>/.exec(from)?.[1] ?? from;
 const same = (left: string | undefined, right: string) =>
   Boolean(left) && left!.trim().toLowerCase() === right.trim().toLowerCase();
 
@@ -89,15 +90,14 @@ function message(record: Record<string, unknown>, threadId?: string): InboxMail 
   const hidden = typeof record.message === 'string' && !field(record, ['text', 'snippet', 'body']);
   if (hidden || record.sent === true) return undefined;
   const subject = field(record, ['subject']) || header(record, 'subject');
+  const receivedAt = field(record, ['receivedAt', 'date', 'internalDate', 'timestamp']);
   return {
     threadId: thread,
     messageId: field(record, ['messageId', 'message_id', 'id']) || thread,
     from: from.slice(0, 300),
     subject: subject.slice(0, 300),
     text: field(record, ['text', 'snippet', 'body', 'preview', 'messageText']).slice(0, 4000),
-    ...(field(record, ['receivedAt', 'date', 'internalDate', 'timestamp'])
-      ? { receivedAt: field(record, ['receivedAt', 'date', 'internalDate', 'timestamp']) }
-      : {}),
+    ...(receivedAt ? { receivedAt } : {}),
   };
 }
 
@@ -239,20 +239,24 @@ export function createInbox(options: {
           .map((agent) => agent.name)
           .join(', ')}.`,
       );
-    const client = registry.clients.get(chosen.client)
-      ? chosen.client
-      : registry.clients.get(inbox.client)
-        ? inbox.client
-        : undefined;
-    if (!client) throw new Error(`${chosen.client} is not a client.`);
+    const client = registry.clients.has(chosen.client) ? chosen.client : inbox.client;
     const title = registry.clients.get(client)!.title;
     const brief = `New mail to ${inbox.address} needs work for ${title}. The Inbox agent opened this card: ${chosen.reason}\nDone when: ${chosen.doneWhen}\nAny reply to the sender reaches a customer or client, so write it as a draft on this card and send nothing unless the owner says yes.\n${untrustedBlock(`email to ${inbox.address}`, JSON.stringify({ from: mail.from, subject: mail.subject, receivedAt: mail.receivedAt, text: mail.text }))}`;
     return transaction(async (db) => {
-      const taken = await db.query(
-        'SELECT 1 FROM tasks WHERE owner_id=$1 AND activity_key=$2 FOR UPDATE',
-        [ownerId, key(inbox.address, mail.threadId)],
-      );
-      if (taken.rowCount) return undefined;
+      const activityKey = key(inbox.address, mail.threadId);
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+        `${ownerId}:${activityKey}`,
+      ]);
+      const taken = (
+        await db.query<{ id: string }>(
+          'SELECT id FROM tasks WHERE owner_id=$1 AND activity_key=$2',
+          [ownerId, activityKey],
+        )
+      ).rows[0];
+      if (taken) {
+        await record(inbox, mail, 'card', 'A card was already open for this thread.', taken.id, db);
+        return undefined;
+      }
       const id = randomUUID();
       const turnId = await enqueueTurn(brief, {
         source: 'event',
@@ -272,7 +276,7 @@ export function createInbox(options: {
           chosen.doneWhen,
           brief,
           'Reading the email.',
-          key(inbox.address, mail.threadId),
+          activityKey,
         ],
       );
       await db.query('UPDATE turns SET task_id=$1,task_revision=1 WHERE id=$2 AND owner_id=$3', [
@@ -320,23 +324,23 @@ export function createInbox(options: {
     const agent = registry.agents.get(inboxAgent);
     const watched = inboxes(registry);
     if (!watched.length) return result;
+    const addresses = watched.map((inbox) => inbox.address).join(', ');
     if (!agent) {
       result.failed.push({
-        inbox: watched.map((inbox) => inbox.address).join(', '),
+        inbox: addresses,
         reason: `No valid Inbox agent config at agents/core/${inboxAgent}.md, so new mail isn't triaged.`,
       });
       return result;
     }
     if (agent.tools.length) {
       result.failed.push({
-        inbox: watched.map((inbox) => inbox.address).join(', '),
+        inbox: addresses,
         reason: `The Inbox agent must list no tools, so that it can never send or reply to email, but agents/${agent.team}/${inboxAgent}.md lists ${agent.tools.join(', ')}. Nothing was triaged.`,
       });
       return result;
     }
     const accounts = await options.accounts();
     const owners = cardOwners(registry);
-    const teams = [...registry.teams.values()];
     for (const inbox of watched) {
       signal.throwIfAborted();
       const startedAt = new Date();
@@ -351,8 +355,12 @@ export function createInbox(options: {
         });
         continue;
       }
+      const time = (item: InboxMail) => Date.parse(item.receivedAt ?? '') || 0;
       const latest = new Map<string, InboxMail>();
-      for (const item of mail) latest.set(item.threadId, item);
+      for (const item of mail.filter((entry) => !same(address(entry.from), inbox.address))) {
+        const current = latest.get(item.threadId);
+        if (!current || time(item) >= time(current)) latest.set(item.threadId, item);
+      }
       const seen = (
         await pool.query<{
           thread_id: string;
@@ -365,7 +373,7 @@ export function createInbox(options: {
           [ownerId, inbox.address, [...latest.keys()]],
         )
       ).rows;
-      const fresh = [...latest.values()]
+      const pending = [...latest.values()]
         .filter((item) => {
           const row = seen.find((entry) => entry.thread_id === item.threadId);
           if (!row) return true;
@@ -373,7 +381,8 @@ export function createInbox(options: {
           if (row.message_id !== item.messageId) return true;
           return row.state === 'failed' && row.attempts < attempts;
         })
-        .slice(0, perInbox);
+        .sort((left, right) => time(left) - time(right));
+      const fresh = pending.slice(0, perInbox);
       for (const item of fresh) {
         signal.throwIfAborted();
         try {
@@ -389,7 +398,7 @@ export function createInbox(options: {
                 role: owner.role,
                 team: owner.team,
                 lead: registry.teams.get(owner.team)?.lead === owner.name,
-                routing: teams.find((team) => team.name === owner.team)?.routing,
+                routing: registry.teams.get(owner.team)?.routing,
               })),
               mail: {
                 from: item.from,
@@ -403,7 +412,7 @@ export function createInbox(options: {
           const parsed = decision.safeParse(raw);
           if (!parsed.success)
             throw new Error(
-              `The Inbox agent's answer wasn't a valid triage decision: ${parsed.error.issues[0]?.message ?? 'invalid'}.`,
+              `The Inbox agent's answer wasn't a valid triage decision: ${parsed.error.issues.map((issue) => `${issue.path.join('.') || 'answer'}: ${issue.message}`).join('; ')}.`,
             );
           if (!parsed.data.needsWork) {
             await record(inbox, item, 'routine', parsed.data.reason, null);
@@ -419,6 +428,7 @@ export function createInbox(options: {
           result.failed.push({ inbox: inbox.address, threadId: item.threadId, reason });
         }
       }
+      if (pending.length > fresh.length) continue;
       await pool.query(
         `INSERT INTO inbox_checks(owner_id,inbox,checked_at) VALUES($1,$2,$3)
          ON CONFLICT (owner_id,inbox) DO UPDATE SET checked_at=EXCLUDED.checked_at`,

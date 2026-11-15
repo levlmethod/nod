@@ -3049,23 +3049,40 @@ async function initializeApplication(
   }
   await onboardingSuggestions.initialize();
   if (options.workers !== false && adapters.model.configured) {
-    const checkInbox = () =>
-      void admission
-        .run(async () => {
-          const { opened, failed } = await inbox.check(closing.signal);
-          for (const failure of failed)
-            console.error(JSON.stringify({ event: 'inbox_triage_failed', ...failure }));
-          if (opened.length) refresh();
+    let inboxRunning = false;
+    const checkInbox = () => {
+      if (inboxRunning) return;
+      inboxRunning = true;
+      const run = admission.run(async () => {
+        const { opened, failed } = await inbox.check(closing.signal);
+        for (const failure of failed)
+          console.error(JSON.stringify({ event: 'inbox_triage_failed', ...failure }));
+        if (opened.length) refresh();
+      });
+      if (!run) inboxRunning = false;
+      void run
+        ?.catch((error) => {
+          if (!closing.signal.aborted)
+            console.error(
+              JSON.stringify({ event: 'inbox_triage_failed', reason: (error as Error).message }),
+            );
         })
-        ?.catch((error) =>
-          console.error(
-            JSON.stringify({ event: 'inbox_triage_failed', reason: (error as Error).message }),
-          ),
-        );
+        .finally(() => {
+          inboxRunning = false;
+        });
+    };
     const inboxTimer = setInterval(checkInbox, 15 * 60_000);
+    const firstInbox = setTimeout(checkInbox, 60_000);
     inboxTimer.unref();
-    closing.signal.addEventListener('abort', () => clearInterval(inboxTimer), { once: true });
-    setTimeout(checkInbox, 60_000).unref();
+    firstInbox.unref();
+    closing.signal.addEventListener(
+      'abort',
+      () => {
+        clearInterval(inboxTimer);
+        clearTimeout(firstInbox);
+      },
+      { once: true },
+    );
   }
   if (adapters.model.configured)
     void admission.run(integrations.resumeWritingStyle)?.catch(() => {});

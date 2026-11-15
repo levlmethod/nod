@@ -38,9 +38,9 @@ inboxes:
       query: in:inbox newer_than:1d
 ```
 
-Every call to that tool first passes Nod's strict read-only check, so a tool that sends, replies or changes anything is refused and nothing runs. Messages are taken from the tool's result wherever it lists objects with a thread ID (`threadId` or `thread_id`) and a sender (`from` or `sender`).
+Every call to that tool first passes Nod's strict read-only check, a small model request on each check, so a tool that sends, replies or changes anything is refused and nothing runs. Messages are taken from the tool's result wherever it lists objects with a thread ID (`threadId` or `thread_id`) and a sender (`from` or `sender`).
 
-A Gmail inbox is read from one hour before its last check, and on its first check from the last 24 hours. Up to 20 new threads per inbox are triaged on each check; the rest wait for the next one. Mail the agency sent itself is skipped.
+A Gmail inbox is read from one hour before its last check, and on its first check from the last 24 hours. Up to 20 new threads per inbox are triaged on each check, oldest first; when more are waiting, the inbox's read window doesn't move, so the rest are triaged on the next check. Only the newest message of each thread is triaged. Mail the agency sent itself, marked sent or sent from the inbox's own address, is skipped.
 
 ## How the Inbox agent decides
 
@@ -50,7 +50,7 @@ For each new thread, the Inbox agent gets the latest email (sender, subject, tex
 
 ## The card
 
-The card belongs to the chosen agent and client and runs behind that client's wall like any other card. Its first turn holds the decision's reason, the done-when line and the email as untrusted data. It runs as background work Nod started on its own, so the trust check allows reads and asks the owner before anything else, including any reply to the sender.
+The card belongs to the chosen agent and client and runs behind that client's wall like any other card. Its first turn holds the decision's reason, the done-when line and the email as untrusted data. It runs as background work Nod started on its own, so the trust check allows reads and asks the owner before anything else, including any reply to the sender, unless the owner's notification rule or standing rules allow that action.
 
 Each thread opens at most one card, ever: the card is keyed by the inbox and thread, and later messages in the same thread open nothing new. A thread the Inbox agent called routine is triaged again only when a new message arrives in it. Every decision is saved in the `inbox_triage` table with its reason, and each failed read or decision is logged as `inbox_triage_failed` with the inbox and the reason.
 
