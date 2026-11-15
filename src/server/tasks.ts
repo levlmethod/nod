@@ -432,6 +432,7 @@ export function createTasks(options: {
       afterCommit(client, () =>
         capture?.({ event: 'task_finished', properties: { status: 'cancelled', actor } }),
       );
+    await options.cards?.closed(client);
     return cancelled;
   }
 
@@ -478,7 +479,11 @@ export function createTasks(options: {
     }
     let id: string;
     if (request.action === 'start') {
-      if (current.task_id) throw failure('This session already has a task. Use update.');
+      const parent =
+        options.cards && current.task_id && !current.proactive && request.agent !== undefined
+          ? (current.task_id as string)
+          : undefined;
+      if (current.task_id && !parent) throw failure('This session already has a task. Use update.');
       let startAfter: Date | undefined;
       if (current.proactive) {
         if (!request.key)
@@ -503,11 +508,12 @@ export function createTasks(options: {
         if (existing) return (await read(client, { id: existing.id, closed: true }))[0];
       }
       id = randomUUID();
-      const independent = current.proactive || current.session_id === turn.threadId;
-      if (request.model && (current.proactive || !independent || !sourceMessageId))
+      const independent =
+        current.proactive || current.session_id === turn.threadId || Boolean(parent);
+      if (request.model && (current.proactive || parent || !independent || !sourceMessageId))
         throw failure('Only a task you start from chat can have its own model.');
       const model = request.model && validateModel(request.model);
-      if (independent && !current.proactive && !sourceMessageId)
+      if (independent && !current.proactive && !parent && !sourceMessageId)
         throw failure('A new task needs an owner request.');
       const prior =
         priorMessageId && sourceMessageId
@@ -549,10 +555,11 @@ export function createTasks(options: {
           model ? JSON.stringify(model) : null,
         ],
       );
-      await options.cards?.start(client, {
+      const card = await options.cards?.start(client, {
         chat: current.session_id === turn.threadId && !current.proactive,
         taskId: id,
         request,
+        parent,
       });
       if (independent) {
         const source = (
@@ -561,9 +568,9 @@ export function createTasks(options: {
             [sourceMessageId, ownerId],
           )
         ).rows[0];
-        if (!source && !current.proactive) throw failure('Owner request not found.');
+        if (!source && !current.proactive && !parent) throw failure('Owner request not found.');
         const child = await enqueueTurn(
-          current.proactive ? (request.brief ?? request.doneWhen) : source!.text,
+          current.proactive || parent ? (request.brief ?? request.doneWhen) : source!.text,
           {
             source: current.proactive ? 'event' : 'task',
             proactive: false,
@@ -580,6 +587,11 @@ export function createTasks(options: {
           sourceMessageId,
           child,
         ]);
+        if (card?.hold)
+          await client.query(
+            "UPDATE turns SET start_after='infinity' WHERE id=$1 AND owner_id=$2",
+            [child, ownerId],
+          );
         await link(client, child, id);
       } else await link(client, turn.turnId, id);
     } else {
@@ -619,6 +631,7 @@ export function createTasks(options: {
         throw failure(
           'The task is closed, its step index is out of range, or it has an owner update to read.',
         );
+      if (request.action === 'finish') await options.cards?.closed(client);
       if (request.action === 'finish')
         afterCommit(client, () =>
           capture?.({

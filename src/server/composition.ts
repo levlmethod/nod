@@ -890,6 +890,7 @@ async function initializeApplication(
   const agents = createAgentBinding({
     knownTools: Object.keys(toolDefinitions),
     cardAgent: cards.agentFor,
+    askedAgent: cards.askedAgentFor,
   });
   const skillLibrary = createSkillLibrary(
     fileURLToPath(new URL('../runtime/skills/', import.meta.url)),
@@ -2181,6 +2182,8 @@ async function initializeApplication(
       },
       taskLedger: tasks.read,
       task: async (turn, raw, sourceMessageId, priorMessageId, priorHandoff) => {
+        const handled = await cards.act(turn, raw);
+        if (handled !== undefined) return handled;
         const request = raw as { action?: unknown; model?: unknown } | undefined;
         if (request?.action === 'start' && request.model) {
           const current = (

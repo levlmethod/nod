@@ -149,7 +149,10 @@ export async function loadAgentRegistry(
 }
 
 const cardRules =
-  'You own this card until it closes. Close it with task finish {id, status, card: {conclusion, evidence: [...], nextAction, confidence: low|medium|high}}, or with question set to exactly one question for the owner when you need their decision. Any other finish is refused.';
+  'You own this card until it closes. Close it with task finish {id, status, card: {conclusion, evidence: [...], nextAction, confidence: low|medium|high}}, or with question set to exactly one question for the owner when you need their decision. Any other finish is refused.\nTo split the work, start child cards with task start {..., agent, estimateMinutes, blockedBy?: [card IDs]}; a card with blockedBy waits until those cards close, and you are resumed with the results once every child card closes. To get one fact from another agent without handing over the work, use task ask {id: your card ID, agent, question}; you are resumed with the answer, and each agent allows 3 back-and-forths per card.';
+
+const askRules =
+  "Another agent asked you a question on their card. The card stays theirs: answer only what was asked, using your tools if you need to check something, and reply with task answer {id, answer}. Don't start, change or close cards from here.";
 
 export function cardOwners(registry: AgentRegistry) {
   return [...registry.agents.values()].filter((agent) => agent.name !== routerAgent);
@@ -176,6 +179,7 @@ export function bindAgent(
   registry: AgentRegistry,
   context: BindingContext,
   cardAgent?: string,
+  role: 'owner' | 'asked' = 'owner',
 ): { agent?: NonNullable<RuntimeContext['agent']> } {
   if (context.proactivity) return {};
   if (context.sessionId === context.threadId) {
@@ -192,7 +196,10 @@ export function bindAgent(
         name: cardAgent,
         title: cardAgent,
         tools: ['task', 'ask_user', 'send_message'],
-        instructions: `The config for ${cardAgent} in agents/ is missing or invalid, so you can't do this card's work. Close the card with one question asking the owner to fix the config or reassign the card.\n${cardRules}`,
+        instructions:
+          role === 'asked'
+            ? `The config for ${cardAgent} in agents/ is missing or invalid, so you can't help. Answer that the owner needs to fix this agent's config.\n${askRules}`
+            : `The config for ${cardAgent} in agents/ is missing or invalid, so you can't do this card's work. Close the card with one question asking the owner to fix the config or reassign the card.\n${cardRules}`,
       },
     };
   return {
@@ -200,7 +207,7 @@ export function bindAgent(
       name: config.name,
       title: config.title,
       tools: config.tools.includes('task') ? config.tools : [...config.tools, 'task'],
-      instructions: `${config.instructions}\n\n${cardRules}`,
+      instructions: `${config.instructions}\n\n${role === 'asked' ? askRules : cardRules}`,
     },
   };
 }
@@ -208,6 +215,7 @@ export function bindAgent(
 export function createAgentBinding(options: {
   knownTools: readonly string[];
   cardAgent: (sessionId: string) => Promise<string | undefined>;
+  askedAgent?: (sessionId: string) => Promise<string | undefined>;
   root?: string;
 }) {
   const root = options.root ?? process.env.NOD_AGENTS_ROOT;
@@ -234,7 +242,9 @@ export function createAgentBinding(options: {
       if (context.proactivity) return {};
       if (context.sessionId === context.threadId) return bindAgent(await load(), context);
       const cardAgent = await options.cardAgent(context.sessionId);
-      return cardAgent ? bindAgent(await load(), context, cardAgent) : {};
+      if (cardAgent) return bindAgent(await load(), context, cardAgent);
+      const asked = await options.askedAgent?.(context.sessionId);
+      return asked ? bindAgent(await load(), context, asked, 'asked') : {};
     },
   };
 }
